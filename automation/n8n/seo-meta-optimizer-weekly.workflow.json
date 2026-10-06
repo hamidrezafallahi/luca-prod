@@ -1,0 +1,242 @@
+{
+  "id": "seo-meta-optimizer-weekly",
+  "name": "SEO Meta Optimizer Weekly",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 10 * * 2"
+            }
+          ]
+        }
+      },
+      "id": "cron",
+      "name": "Tuesday 10:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "api",
+              "name": "apiBase",
+              "value": "={{ $env.API_BASE_URL || 'http://backend:8080/api' }}",
+              "type": "string"
+            },
+            {
+              "id": "hook",
+              "name": "alertWebhook",
+              "value": "={{ $env.SEO_ALERT_WEBHOOK_URL || '' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "config",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.apiBase }}/Identity/login",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"emailOrPhone\": \"{{ $env.CONTENT_BOT_EMAIL }}\",\n  \"password\": \"{{ $env.CONTENT_BOT_PASSWORD }}\"\n}",
+        "options": {}
+      },
+      "id": "login",
+      "name": "Login Content Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config').item.json.apiBase }}/SeoOps/meta-audit",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "take",
+              "value": "10"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.data.accessToken || $json.accessToken || $json.data?.accessToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "audit",
+      "name": "Meta Audit",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $input.first().json;\nconst items = payload.data || payload || [];\nconst list = Array.isArray(items) ? items : [];\nif (!list.length) {\n  return [{ json: { skip: true, text: 'Meta audit: no weak pages found.', alertWebhook: $('Config').item.json.alertWebhook } }];\n}\nreturn [{ json: { skip: false, items: list.slice(0, 8), alertWebhook: $('Config').item.json.alertWebhook } }];"
+      },
+      "id": "gate",
+      "name": "Has Issues?",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !$json.skip }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-items",
+      "name": "Continue?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LLM_API_URL  }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.LLM_API_KEY  }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "HTTP-Referer",
+              "value": "https://lucaloupe.com"
+            },
+            {
+              "name": "X-Title",
+              "value": "Luca Loupe SEO Blog"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $env.LLM_MODEL }}\",\n  \"temperature\": 0.4,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You optimize Persian SEO titles/meta for a dental loupe shop. Return JSON {\\\"suggestions\\\":[{\\\"blogId\\\":number,\\\"slug\\\":string,\\\"titleFa\\\":string,\\\"metaDescriptionFa\\\":string,\\\"rationale\\\":string}]}. titleFa 40-65 chars, metaDescriptionFa 70-155 chars. Do not invent facts. Human will apply manually.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify(JSON.stringify($json.items)) }}\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "llm",
+      "name": "Suggest Meta (LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst content = raw.choices?.[0]?.message?.content || '{}';\nlet parsed = {};\ntry { parsed = JSON.parse(content); } catch { parsed = { suggestions: [] }; }\nconst suggestions = Array.isArray(parsed.suggestions) ? parsed.suggestions : [];\nconst lines = suggestions.map((s) => {\n  return [`• /fa/blog/${s.slug || s.blogId}`, `  title: ${s.titleFa || ''}`, `  meta: ${s.metaDescriptionFa || ''}`, `  why: ${s.rationale || ''}`].join('\\n');\n});\nconst text = [\n  '✍️ SEO Meta Suggestions (HUMAN GATE — do not auto-publish)',\n  `Count: ${suggestions.length}`,\n  '',\n  ...(lines.length ? lines : ['No suggestions parsed'])\n].join('\\n');\nreturn [{ json: { text, alertWebhook: $('Has Issues?').item.json.alertWebhook, suggestions } }];"
+      },
+      "id": "format",
+      "name": "Format Suggestions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !!$json.alertWebhook }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-hook",
+      "name": "Has Webhook?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1760, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.alertWebhook }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.text) }}\n}",
+        "options": {}
+      },
+      "id": "send",
+      "name": "Send Suggestions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 100],
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "Tuesday 10:00": {
+      "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
+    },
+    "Config": {
+      "main": [[{ "node": "Login Content Bot", "type": "main", "index": 0 }]]
+    },
+    "Login Content Bot": {
+      "main": [[{ "node": "Meta Audit", "type": "main", "index": 0 }]]
+    },
+    "Meta Audit": {
+      "main": [[{ "node": "Has Issues?", "type": "main", "index": 0 }]]
+    },
+    "Has Issues?": {
+      "main": [[{ "node": "Continue?", "type": "main", "index": 0 }]]
+    },
+    "Continue?": {
+      "main": [
+        [{ "node": "Suggest Meta (LLM)", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Suggest Meta (LLM)": {
+      "main": [[{ "node": "Format Suggestions", "type": "main", "index": 0 }]]
+    },
+    "Format Suggestions": {
+      "main": [[{ "node": "Has Webhook?", "type": "main", "index": 0 }]]
+    },
+    "Has Webhook?": {
+      "main": [
+        [{ "node": "Send Suggestions", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Tehran"
+  },
+  "versionId": "1",
+  "tags": [{ "name": "seo" }, { "name": "meta" }]
+}

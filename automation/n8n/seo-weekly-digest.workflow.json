@@ -1,0 +1,217 @@
+{
+  "id": "seo-weekly-digest",
+  "name": "SEO Weekly Digest",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "cron",
+      "name": "Monday 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "api",
+              "name": "apiBase",
+              "value": "={{ $env.API_BASE_URL || 'http://backend:8080/api' }}",
+              "type": "string"
+            },
+            {
+              "id": "hook",
+              "name": "alertWebhook",
+              "value": "={{ $env.SEO_ALERT_WEBHOOK_URL || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "stale",
+              "name": "staleDays",
+              "value": "={{ $env.SEO_STALE_DAYS || '90' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "config",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.apiBase }}/Identity/login",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"emailOrPhone\": \"{{ $env.CONTENT_BOT_EMAIL }}\",\n  \"password\": \"{{ $env.CONTENT_BOT_PASSWORD }}\"\n}",
+        "options": {}
+      },
+      "id": "login",
+      "name": "Login Content Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config').item.json.apiBase }}/SeoOps/snapshot",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "staleDays",
+              "value": "={{ $('Config').item.json.staleDays }}"
+            },
+            {
+              "name": "take",
+              "value": "15"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.data.accessToken || $json.accessToken || $json.data?.accessToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "snapshot",
+      "name": "Get SEO Snapshot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LLM_API_URL  }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.LLM_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "HTTP-Referer",
+              "value": "https://lucaloupe.com"
+            },
+            {
+              "name": "X-Title",
+              "value": "Luca Loupe SEO Blog"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $env.LLM_MODEL }}\",\n  \"temperature\": 0.3,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"تو یک SEO lead برای فروشگاه لوپ دندان‌پزشکی هستی. خروجی را فارسی، کوتاه و اجرایی بنویس: 1) وضعیت کلی 2) ۳ اولویت این هفته 3) ریسک‌ها. بدون کلیشه.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify('Snapshot JSON: ' + JSON.stringify($json.data || $json)) }}\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "llm",
+      "name": "Summarize Digest (LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const snapPayload = $('Get SEO Snapshot').item.json;\nconst snap = snapPayload.data || snapPayload;\nconst llm = $input.first().json;\nconst summary = llm.choices?.[0]?.message?.content\n  || 'LLM summary unavailable — use raw snapshot counts below.';\n\nconst weak = (snap.weakMetaBlogs || []).slice(0, 5).map((b) => `- ${b.path}: ${(b.issues || []).join(', ')}`);\nconst stale = (snap.refreshCandidates || []).slice(0, 5).map((b) => `- ${b.path} (${b.ageDays ?? '?'}d)`);\nconst drafts = (snap.recentInactiveDrafts || []).slice(0, 5).map((b) => `- ${b.path}`);\n\nconst text = [\n  '📊 SEO Weekly Digest',\n  `Blogs active/inactive: ${snap.activeBlogs}/${snap.inactiveBlogs}`,\n  `Products/Categories/Brands: ${snap.activeProducts}/${snap.activeCategories}/${snap.activeBrands}`,\n  `Weak meta: ${snap.weakMetaCount} | Stale blogs: ${snap.staleBlogCount}`,\n  '',\n  'AI summary:',\n  summary,\n  '',\n  'Weak meta sample:',\n  ...(weak.length ? weak : ['- none']),\n  '',\n  'Refresh candidates:',\n  ...(stale.length ? stale : ['- none']),\n  '',\n  'Inactive drafts awaiting review:',\n  ...(drafts.length ? drafts : ['- none'])\n].join('\\n');\n\nreturn [{\n  json: {\n    text,\n    alertWebhook: $('Config').item.json.alertWebhook,\n    snap\n  }\n}];"
+      },
+      "id": "format",
+      "name": "Format Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !!$json.alertWebhook }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-hook",
+      "name": "Has Webhook?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1320, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.alertWebhook }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.text) }}\n}",
+        "options": {}
+      },
+      "id": "send",
+      "name": "Send Digest Webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1540, 200],
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "Monday 09:00": {
+      "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
+    },
+    "Config": {
+      "main": [[{ "node": "Login Content Bot", "type": "main", "index": 0 }]]
+    },
+    "Login Content Bot": {
+      "main": [[{ "node": "Get SEO Snapshot", "type": "main", "index": 0 }]]
+    },
+    "Get SEO Snapshot": {
+      "main": [[{ "node": "Summarize Digest (LLM)", "type": "main", "index": 0 }]]
+    },
+    "Summarize Digest (LLM)": {
+      "main": [[{ "node": "Format Digest", "type": "main", "index": 0 }]]
+    },
+    "Format Digest": {
+      "main": [[{ "node": "Has Webhook?", "type": "main", "index": 0 }]]
+    },
+    "Has Webhook?": {
+      "main": [
+        [{ "node": "Send Digest Webhook", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Tehran"
+  },
+  "versionId": "1",
+  "tags": [{ "name": "seo" }, { "name": "digest" }]
+}

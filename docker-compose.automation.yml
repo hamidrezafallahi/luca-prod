@@ -1,0 +1,80 @@
+# =============================================================================
+# Production Automation (n8n + Hermes)
+# =============================================================================
+# Prerequisite: shop stack must already be running (shop-network-prod exists).
+# Workflows: ./automation/n8n/*.workflow.json (import in n8n UI).
+# Hermes home (SOUL.md, USER.md, config, sessions) stays on the host at
+# /root/.hermes and is mounted read/write at /opt/data inside the container.
+# Secrets live in /opt/shop/.env via env_file (never inline in this file).
+#
+# Run (on VPS, from /opt/shop):
+#   docker compose -p shop -f docker-compose.automation.yml up -d
+# Or via deploy:
+#   ./deploy.sh automation
+#   ./deploy.sh automation recreate   # n8n + hermes
+# =============================================================================
+
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: shop-n8n-prod
+    ports:
+      - "127.0.0.1:${N8N_PORT:-5678}:5678"
+    env_file:
+      - .env
+    volumes:
+      - n8n_data_prod:/home/node/.n8n
+      - ./automation/n8n:/workflows:ro
+    networks:
+      - shop-network-prod
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+        reservations:
+          memory: 512M
+          cpus: "0.25"
+
+  # Isolated owner agent. Talks to n8n + backend over shop-network-prod.
+  # Dashboard/API bind to 127.0.0.1 (P003). Reach them with:
+  #   ssh -L 9119:127.0.0.1:9119 -L 8642:127.0.0.1:8642 root@VPS
+  # then http://127.0.0.1:9119
+  # Do NOT mount docker.sock — the point of this move is host isolation.
+  hermes:
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+    container_name: shop-hermes-prod
+    command: ["gateway", "run"]
+    env_file:
+      - .env
+    ports:
+      - "${HERMES_DASHBOARD_BIND:-127.0.0.1}:${HERMES_DASHBOARD_PORT:-9119}:9119"
+      - "${HERMES_API_BIND:-127.0.0.1}:${HERMES_API_PORT:-8642}:8642"
+    volumes:
+      - /root/.hermes:/opt/data
+      - ./automation/hermes/skills/shop:/opt/data/skills/shop:ro
+    depends_on:
+      - n8n
+    networks:
+      - shop-network-prod
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+        reservations:
+          memory: 256M
+          cpus: "0.25"
+
+networks:
+  shop-network-prod:
+    external: true
+    name: shop-network-prod
+
+volumes:
+  n8n_data_prod:
+    name: shop-n8n-data-prod

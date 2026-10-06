@@ -1,0 +1,270 @@
+{
+  "id": "shop-low-stock-alert",
+  "name": "Shop Low Stock Alert (Telegram owner)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron",
+      "name": "Hourly",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 160]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "shop-low-stock-alert",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 400],
+      "webhookId": "shop-low-stock-alert"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst secret = $env.SHOP_OWNER_WEBHOOK_SECRET;\nconst headers = item.headers || {};\nconst body = (item.body && typeof item.body === 'object') ? item.body : item;\nconst isWebhook = !!(headers.host || headers.Host);\nconst headerSecret = String(headers['x-shop-webhook-secret'] || headers['X-Shop-Webhook-Secret'] || '');\nconst bodySecret = String(body.webhookSecret || '');\nconst authorized = isWebhook\n  ? (!!secret && (headerSecret === secret || bodySecret === secret))\n  : true;\n\nlet below = body.below !== undefined && body.below !== '' ? Number(body.below) : 2;\nif (!Number.isFinite(below) || below < 1) below = 2;\nconst force = body.force === true || body.force === 'true' || body.force === 1;\n\nlet error = '';\nlet httpStatus = 200;\nif (isWebhook && !authorized) { error = 'Unauthorized webhook'; httpStatus = 401; }\n\nconst hasTelegram = !!(String($env.TELEGRAM_BOT_TOKEN || '').trim() && String($env.TELEGRAM_CHAT_ID || '').trim());\nif (!error && !hasTelegram) { error = 'TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not set'; httpStatus = 500; }\n\nreturn [{ json: {\n  ok: !error, error, httpStatus, isWebhook, below, force,\n  telegramChatId: String($env.TELEGRAM_CHAT_ID || '').trim(),\n  apiBase: $env.API_BASE_URL || 'http://backend:8080/api'\n} }];"
+      },
+      "id": "parse",
+      "name": "Parse Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 280]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.ok }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "ready",
+      "name": "Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [460, 280]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error || 'Bad request' }) }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus || 400 }}"
+        }
+      },
+      "id": "respond-error",
+      "name": "Respond Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $input.first().json;\nconst api = ctx.apiBase;\nconst below = ctx.below;\nconst force = !!ctx.force;\nconst unwrap = (res) => {\n  if (Array.isArray(res)) return res;\n  if (Array.isArray(res?.data?.records)) return res.data.records;\n  if (Array.isArray(res?.data)) return res.data;\n  return res?.data ?? res;\n};\nconst http = async (url) => {\n  const res = await this.helpers.httpRequest({\n    method: 'GET', url, json: true, ignoreHttpStatusErrors: true, returnFullResponse: true\n  });\n  const status = res.statusCode || res.status || 200;\n  const payload = res.body !== undefined ? res.body : res;\n  if (status >= 400) {\n    const err = payload?.error || payload?.title || payload?.message || `HTTP ${status}`;\n    const e = new Error(String(err));\n    e.statusCode = status;\n    throw e;\n  }\n  return payload;\n};\n\ntry {\n  const offers = [];\n  let page = 1;\n  const pageSize = 100;\n  let totalPages = 1;\n  while (page <= totalPages && page <= 20) {\n    const raw = await http(`${api}/ProductOffers?page=${page}&pageSize=${pageSize}&onlyActives=false`);\n    const records = unwrap(raw) || [];\n    const list = Array.isArray(records) ? records : [];\n    offers.push(...list);\n    const meta = raw?.data || raw;\n    totalPages = Number(meta?.totalPages || meta?.TotalPages || 1) || 1;\n    if (list.length < pageSize) break;\n    page += 1;\n  }\n\n  const low = offers\n    .filter(o => !o.isDeleted)\n    .map(o => ({\n      offerId: o.id,\n      productId: o.productId,\n      name: o.productName || o.name || `offer-${o.id}`,\n      inventory: Number(o.inventory),\n      isActive: !!o.isActive,\n      price: o.basePrice ?? o.finalPrice\n    }))\n    .filter(o => Number.isFinite(o.inventory) && o.inventory < below)\n    .sort((a, b) => a.inventory - b.inventory || a.offerId - b.offerId);\n\n  const staticData = $getWorkflowStaticData('global');\n  const prev = (staticData.lowStock && typeof staticData.lowStock === 'object') ? { ...staticData.lowStock } : {};\n  const toAlert = [];\n  for (const o of low) {\n    const key = String(o.offerId);\n    const last = prev[key];\n    if (!force && last !== undefined && Number(last) === o.inventory) continue;\n    toAlert.push(o);\n    prev[key] = o.inventory;\n  }\n  for (const key of Object.keys(prev)) {\n    if (!low.some(o => String(o.offerId) === key)) delete prev[key];\n  }\n  staticData.lowStock = prev;\n\n  if (!toAlert.length) {\n    return [{ json: {\n      ok: true, httpStatus: 200, isWebhook: ctx.isWebhook, below, force,\n      scanned: offers.length, lowCount: low.length, alertCount: 0, skippedNotify: true,\n      telegramChatId: ctx.telegramChatId,\n      textFa: low.length\n        ? `موجودی کم: ${low.length} مورد (بدون تغییر نسبت به هشدار قبلی)`\n        : `موجودی کم: موردی با موجودی < ${below} نیست.`\n    } }];\n  }\n\n  const lines = toAlert.map(o => {\n    const state = o.isActive ? 'فعال' : 'پیش‌نویس';\n    return `#${o.offerId} ${o.name}\\n  موجودی: ${o.inventory} | productId: ${o.productId} | ${state}`;\n  });\n  let textFa = [`⚠️ هشدار موجودی کم (< ${below})`, `تعداد: ${toAlert.length}`, '', ...lines].join('\\n');\n  if (textFa.length > 3900) textFa = textFa.slice(0, 3890) + '\\n…';\n\n  return [{ json: {\n    ok: true, httpStatus: 200, isWebhook: ctx.isWebhook, below, force,\n    scanned: offers.length, lowCount: low.length, alertCount: toAlert.length, skippedNotify: false,\n    telegramChatId: ctx.telegramChatId, textFa, items: toAlert\n  } }];\n} catch (e) {\n  return [{ json: { ok: false, httpStatus: e.statusCode || 502, isWebhook: ctx.isWebhook, error: e.message || String(e) } }];\n}"
+      },
+      "id": "scan",
+      "name": "Scan Low Stock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 180]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.ok }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "scan-ok",
+      "name": "Scan Ok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 180]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !$json.skippedNotify }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "need-notify",
+      "name": "Need Notify?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1120, 80]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.telegramChatId, text: $json.textFa, disable_web_page_preview: true }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "telegram",
+      "name": "Send Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const scan = $('Scan Low Stock').item.json;\nconst tg = $input.first().json;\nconst status = tg.statusCode || tg.status || 200;\nconst body = tg.body !== undefined ? tg.body : tg;\nconst tgOk = status < 400 && body?.ok !== false;\nif (!tgOk) {\n  return [{ json: {\n    ok: false, httpStatus: 502, isWebhook: scan.isWebhook,\n    error: body?.description || body?.error || `Telegram HTTP ${status}`,\n    alertCount: scan.alertCount, lowCount: scan.lowCount\n  } }];\n}\nreturn [{ json: {\n  ok: true, httpStatus: 200, isWebhook: scan.isWebhook,\n  alertCount: scan.alertCount, lowCount: scan.lowCount, scanned: scan.scanned,\n  notified: true, textFa: scan.textFa\n} }];"
+      },
+      "id": "after-tg",
+      "name": "After Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const scan = $input.first().json;\nreturn [{ json: {\n  ok: true, httpStatus: 200, isWebhook: scan.isWebhook,\n  alertCount: 0, lowCount: scan.lowCount, scanned: scan.scanned,\n  notified: false, skippedNotify: true, textFa: scan.textFa\n} }];"
+      },
+      "id": "skip-tg",
+      "name": "Skip Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 160]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isWebhook }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "is-webhook",
+      "name": "Is Webhook?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1780, 80]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus || 200 }}"
+        }
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2000, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error || 'Failed' }) }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus || 500 }}"
+        }
+      },
+      "id": "respond-fail",
+      "name": "Respond Fail",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1120, 360]
+    }
+  ],
+  "connections": {
+    "Hourly": {
+      "main": [[{ "node": "Parse Payload", "type": "main", "index": 0 }]]
+    },
+    "Webhook": {
+      "main": [[{ "node": "Parse Payload", "type": "main", "index": 0 }]]
+    },
+    "Parse Payload": {
+      "main": [[{ "node": "Ready?", "type": "main", "index": 0 }]]
+    },
+    "Ready?": {
+      "main": [
+        [{ "node": "Scan Low Stock", "type": "main", "index": 0 }],
+        [{ "node": "Respond Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Scan Low Stock": {
+      "main": [[{ "node": "Scan Ok?", "type": "main", "index": 0 }]]
+    },
+    "Scan Ok?": {
+      "main": [
+        [{ "node": "Need Notify?", "type": "main", "index": 0 }],
+        [{ "node": "Respond Fail", "type": "main", "index": 0 }]
+      ]
+    },
+    "Need Notify?": {
+      "main": [
+        [{ "node": "Send Telegram", "type": "main", "index": 0 }],
+        [{ "node": "Skip Telegram", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Telegram": {
+      "main": [[{ "node": "After Telegram", "type": "main", "index": 0 }]]
+    },
+    "After Telegram": {
+      "main": [[{ "node": "Is Webhook?", "type": "main", "index": 0 }]]
+    },
+    "Skip Telegram": {
+      "main": [[{ "node": "Is Webhook?", "type": "main", "index": 0 }]]
+    },
+    "Is Webhook?": {
+      "main": [
+        [{ "node": "Respond Success", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Tehran"
+  },
+  "versionId": "p022-low-stock",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": [
+    { "name": "owner" },
+    { "name": "shop" },
+    { "name": "telegram" }
+  ]
+}

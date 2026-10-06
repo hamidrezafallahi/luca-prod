@@ -1,0 +1,58 @@
+# =============================================================================
+# Production Tools
+# =============================================================================
+# Run: docker compose -f docker-compose.tools.yml up -d
+# All container env vars come from .env via env_file (see .env.example).
+# =============================================================================
+
+services:
+  # ─── pgAdmin ──────────────────────────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: shop-pgadmin-prod
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:5050:80"
+
+    volumes:
+      - pgadmin_data_prod:/var/lib/pgadmin
+
+    networks:
+      - shop-network-prod
+
+    restart: unless-stopped
+
+  # ─── Portainer ────────────────────────────────────────────────────────────
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: shop-portainer-prod
+    env_file:
+      - .env
+    command: -H unix:///var/run/docker.sock
+    ports:
+      - "127.0.0.1:${PORTAINER_PORT:-9000}:9000"
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - portainer_data_prod:/data
+
+    networks:
+      - shop-network-prod
+
+    restart: unless-stopped
+
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  shop-network-prod:
+    external: true
+    name: shop-network-prod
+
+volumes:
+  pgadmin_data_prod:
+    name: shop-pgadmin-data-prod
+
+  portainer_data_prod:
+    name: shop-portainer-data-prod

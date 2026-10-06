@@ -1,0 +1,484 @@
+{
+  "id": "ai-blog-seo-daily",
+  "name": "AI Blog SEO Daily",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-daily",
+      "name": "Daily 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-blog-seo-daily-run",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-run",
+      "name": "Run Now",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 520],
+      "webhookId": "ai-blog-seo-daily-run"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "seed",
+              "name": "seedTopics",
+              "value": "={{ $env.BLOG_KEYWORDS_JSON || $env.SEED_TOPICS_JSON || '[\"لوپ دندان‌پزشکی\",\"هدلایت دندان‌پزشکی\"]' }}",
+              "type": "string"
+            },
+            {
+              "id": "suggest-q",
+              "name": "suggestQuery",
+              "value": "={{ $env.BLOG_SUGGEST_QUERY || (JSON.parse($env.BLOG_KEYWORDS_JSON || $env.SEED_TOPICS_JSON || '[\"لوپ دندان‌پزشکی\"]')[0]) }}",
+              "type": "string"
+            },
+            {
+              "id": "api",
+              "name": "apiBase",
+              "value": "={{ $env.API_BASE_URL || 'http://localhost:8080/api' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-config",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.apiBase }}/Identity/login",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"emailOrPhone\": \"{{ $env.CONTENT_BOT_EMAIL }}\",\n  \"password\": \"{{ $env.CONTENT_BOT_PASSWORD }}\"\n}",
+        "options": {}
+      },
+      "id": "login",
+      "name": "Login Content Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "token",
+              "name": "accessToken",
+              "value": "={{ $json.data.accessToken || $json.accessToken || $json.data?.accessToken }}",
+              "type": "string"
+            },
+            {
+              "id": "api2",
+              "name": "apiBase",
+              "value": "={{ $('Config').item.json.apiBase }}",
+              "type": "string"
+            },
+            {
+              "id": "seed2",
+              "name": "seedTopics",
+              "value": "={{ $('Config').item.json.seedTopics }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "store-token",
+      "name": "Store Token",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Store Token').item.json.apiBase }}/Blogs/getslugs?includeInactive=true",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Store Token').item.json.accessToken }}"
+            }
+          ]
+        }
+      },
+      "id": "get-slugs",
+      "name": "Get Existing Slugs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://suggestqueries.google.com/complete/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "client", "value": "firefox" },
+            { "name": "hl", "value": "fa" },
+            {
+              "name": "q",
+              "value": "={{ $('Config').item.json.suggestQuery || 'لوپ دندان‌پزشکی' }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "keyword-suggest",
+      "name": "Keyword Suggest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const token = $('Store Token').item.json.accessToken;\nconst apiBase = $('Store Token').item.json.apiBase;\nconst slugPayload = $('Get Existing Slugs').item.json;\nconst slugList = slugPayload?.data || slugPayload || [];\n\nconst normalizeSlug = (value) => String(value || '')\n  .normalize('NFKC')\n  .replace(/[\\u200c\\u200d\\u200e\\u200f\\ufeff]/g, '')\n  .toLowerCase()\n  .trim()\n  .replace(/\\s+/g, '-')\n  .replace(/[^\\u0600-\\u06FFa-z0-9-]/gi, '')\n  .replace(/-+/g, '-')\n  .replace(/^-|-$/g, '');\n\nconst normalizeText = (value) => String(value || '')\n  .normalize('NFKC')\n  .replace(/[\\u200c\\u200d\\u200e\\u200f\\ufeff]/g, '')\n  .toLowerCase()\n  .replace(/[^\\u0600-\\u06FFa-z0-9\\s]/gi, ' ')\n  .replace(/\\s+/g, ' ')\n  .trim();\n\nconst parseKeywordList = (raw) => {\n  if (Array.isArray(raw)) return raw.map(String).map((s) => s.trim()).filter(Boolean);\n  if (raw == null || raw === '') return [];\n  if (typeof raw === 'string') {\n    try {\n      const parsed = JSON.parse(raw);\n      if (Array.isArray(parsed)) return parsed.map(String).map((s) => s.trim()).filter(Boolean);\n    } catch (e) {\n      return raw.split(/[\\n,]+/).map((s) => s.trim()).filter(Boolean);\n    }\n  }\n  return [];\n};\n\nconst existingSlugs = new Set(\n  (Array.isArray(slugList) ? slugList : [])\n    .map((x) => normalizeSlug(typeof x === 'string' ? x : (x?.slug || '')))\n    .filter(Boolean)\n);\n\nconst coveredTitles = [];\nconst coveredPhrases = new Set();\nconst STOP = new Set(['راهنمای','خرید','نگهداری','شستشوی','برای','با','از','و','در','به','یک','این','آن','مدل','ترین','های','ها']);\n\nconst addCovered = (value) => {\n  const t = normalizeText(value);\n  if (!t) return;\n  coveredPhrases.add(t);\n  coveredTitles.push(t);\n  for (const part of t.split(' ')) {\n    if (part.length >= 4) coveredPhrases.add(part);\n  }\n};\n\nfor (const x of (Array.isArray(slugList) ? slugList : [])) {\n  addCovered(typeof x === 'string' ? x : x?.slug);\n}\n\nconst authHeaders = { Authorization: `Bearer ${token}` };\nconst safeGet = async (path, qs) => {\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'GET', url: `${apiBase}${path}`, qs: qs || {}, headers: authHeaders, json: true,\n    });\n    return res?.data ?? res;\n  } catch (e) {\n    return null;\n  }\n};\n\nconst [categoriesPayload, productsPayload, blogsPayload, snapshot] = await Promise.all([\n  safeGet('/Categories', { isShowInLanding: true, pageSize: 50, onlyActives: true }),\n  safeGet('/Products', { onlyActives: true, pageSize: 50 }),\n  safeGet('/Blogs', { onlyActives: false, pageSize: 100 }),\n  safeGet('/SeoOps/snapshot', { staleDays: 90, take: 20 }),\n]);\n\nconst categories = categoriesPayload?.records || (Array.isArray(categoriesPayload) ? categoriesPayload : []);\nconst products = productsPayload?.records || (Array.isArray(productsPayload) ? productsPayload : []);\nconst blogs = blogsPayload?.records || (Array.isArray(blogsPayload) ? blogsPayload : []);\nfor (const b of blogs) {\n  addCovered(b.titleFa); addCovered(b.slug); addCovered(b.metaKeywordsFa); addCovered(b.excerptFa);\n}\n\nconst isCovered = (keyword) => {\n  const t = normalizeText(keyword);\n  if (!t) return true;\n  if (coveredPhrases.has(t)) return true;\n  const slug = normalizeSlug(keyword);\n  if (slug && existingSlugs.has(slug)) return true;\n  for (const title of coveredTitles) {\n    if (title.includes(t) || t.includes(title)) return true;\n    const core = t.split(' ').filter((w) => w.length >= 3 && !STOP.has(w));\n    const titleCore = title.split(' ').filter((w) => w.length >= 3 && !STOP.has(w));\n    if (core.length && titleCore.length) {\n      const hit = core.filter((w) => titleCore.includes(w)).length;\n      if (hit / Math.max(core.length, 1) >= 0.6) return true;\n    }\n  }\n  return false;\n};\n\nconst daySeed = Math.floor(Date.now() / 86400000);\nconst envKeywords = parseKeywordList($env.BLOG_KEYWORDS_JSON || $env.SEED_TOPICS_JSON || '');\nconst catalogNames = [\n  ...categories.map((c) => c.persianName).filter(Boolean),\n  ...products.map((p) => p.name).filter(Boolean),\n];\n\nconst prefixes = ['خرید', 'قیمت', 'بهترین', 'راهنمای خرید'];\nconst seedSet = new Set();\nconst addSeed = (s) => {\n  const t = String(s || '').trim();\n  if (t.length >= 4) seedSet.add(t);\n};\nfor (const name of catalogNames) {\n  addSeed(name);\n  for (const p of prefixes) addSeed(`${p} ${name}`);\n}\nfor (const k of envKeywords) addSeed(k);\naddSeed($env.BLOG_SUGGEST_QUERY || 'لوپ دندان‌پزشکی');\naddSeed('لوپ پریزماتیک');\naddSeed('لوپ گالیله‌ای');\naddSeed('هدلایت LED دندان‌پزشکی');\n\nconst allSeeds = [...seedSet];\nconst seedCount = Math.min(10, allSeeds.length || 1);\nconst seeds = [];\nfor (let i = 0; i < seedCount; i++) {\n  seeds.push(allSeeds[(daySeed + i * 3) % allSeeds.length]);\n}\n\nconst fetchSuggest = async (q) => {\n  try {\n    const suggest = await this.helpers.httpRequest({\n      method: 'GET',\n      url: 'https://suggestqueries.google.com/complete/search',\n      qs: { client: 'chrome', hl: 'fa', q },\n      headers: { 'User-Agent': 'Mozilla/5.0' },\n      json: true,\n    });\n    const arr = Array.isArray(suggest?.[1]) ? suggest[1] : [];\n    return arr.map((item) => {\n      if (typeof item === 'string') return item;\n      if (Array.isArray(item)) return String(item[0] || '');\n      return String(item || '');\n    }).filter(Boolean);\n  } catch (e) {\n    return [];\n  }\n};\n\nconst suggestResults = await Promise.all(seeds.map((s) => fetchSuggest(s)));\nconst demandQueries = [];\nconst seenDemand = new Set();\nseeds.forEach((seed, idx) => {\n  for (const q of (suggestResults[idx] || []).slice(0, 10)) {\n    const key = normalizeText(q);\n    if (!key || seenDemand.has(key)) continue;\n    seenDemand.add(key);\n    demandQueries.push({ query: q, seed });\n  }\n});\n\nconst COMMERCIAL = ['خرید', 'قیمت', 'بهترین', 'ارزان', 'آنلاین', 'فروش', 'دیجی', 'راهنما', 'نگهداری', 'شستشو'];\nconst scoreDemand = (query) => {\n  const t = normalizeText(query);\n  let score = 50;\n  const words = t.split(' ').filter(Boolean);\n  if (words.length >= 3) score += 12;\n  if (words.length >= 4) score += 6;\n  for (const c of COMMERCIAL) if (t.includes(c)) score += 8;\n  for (const name of catalogNames) {\n    const n = normalizeText(name);\n    if (n && t.includes(n)) { score += 15; break; }\n  }\n  if (/(لوپ|هدلایت|دندان|پریزماتیک|گالیله|بزرگ‌نمایی|لنز|فریم)/.test(t)) score += 10;\n  if (/(دیجی\\s*کالا|ترب|آمازون)/.test(t)) score -= 8;\n  return score;\n};\n\nconst candidates = [];\nconst pushCandidate = (keyword, meta) => {\n  const k = String(keyword || '').trim();\n  if (k.length < 6 || k.length > 80) return;\n  if (isCovered(k)) return;\n  const slug = normalizeSlug(k);\n  if (!slug || existingSlugs.has(slug)) return;\n  candidates.push({\n    keyword: k,\n    slug,\n    source: meta.source,\n    intent: meta.intent,\n    score: meta.score,\n    seed: meta.seed || null,\n    brief: meta.brief || '',\n    relatedCategory: meta.relatedCategory || null,\n    relatedProduct: meta.relatedProduct || null,\n  });\n};\n\nfor (const d of demandQueries) {\n  pushCandidate(d.query, {\n    source: 'search-demand',\n    intent: 'autocomplete',\n    score: scoreDemand(d.query),\n    seed: d.seed,\n    brief: `عبارت واقعی پیشنهادی گوگل از seed «${d.seed}» (proxy تقاضای جستجو).`,\n  });\n}\n\nif (candidates.filter((c) => c.source === 'search-demand').length < 5) {\n  for (const c of categories) {\n    const name = c.persianName || '';\n    if (!name) continue;\n    pushCandidate(`راهنمای خرید ${name}`, {\n      source: 'category-gap-fallback', intent: 'buying-guide', score: 28,\n      relatedCategory: { id: c.id, name, slug: c.slug },\n      brief: `Fallback شکاف دسته «${name}».`,\n    });\n  }\n}\n\ncandidates.sort((a, b) => b.score - a.score || a.keyword.localeCompare(b.keyword, 'fa'));\nconst demandOnly = candidates.filter((c) => c.source === 'search-demand');\nconst pool = (demandOnly.length >= 3 ? demandOnly : candidates).slice(0, 12);\n\nlet pick = null;\nif (pool.length) {\n  pick = pool[daySeed % pool.length];\n} else {\n  const fallback = envKeywords[0] || catalogNames[0] || 'لوپ دندان‌پزشکی';\n  let slug = normalizeSlug(`${fallback}-${daySeed}`) || `blog-${daySeed}`;\n  let i = 2;\n  while (existingSlugs.has(slug) && i < 30) slug = `${normalizeSlug(fallback)}-${daySeed}-${i++}`;\n  pick = {\n    keyword: fallback, slug, source: 'fallback-unique', intent: 'fallback', score: 1,\n    brief: 'fallback یکتا', relatedCategory: null, relatedProduct: null, seed: null,\n  };\n}\n\nreturn [{\n  json: {\n    token,\n    apiBase,\n    selectedKeyword: pick.keyword,\n    selectedTopic: pick.keyword,\n    slug: pick.slug,\n    intent: pick.intent,\n    topicSource: pick.source,\n    contentBrief: pick.brief,\n    suggestSeed: pick.seed,\n    relatedCategory: pick.relatedCategory,\n    relatedProduct: pick.relatedProduct,\n    seedsUsed: seeds,\n    demandQueryCount: demandQueries.length,\n    candidateCount: candidates.length,\n    topCandidates: pool.slice(0, 8).map((c) => ({ keyword: c.keyword, score: c.score, source: c.source })),\n    seoHint: snapshot ? `blogs=${snapshot.activeBlogs}/${snapshot.inactiveBlogs}` : 'snapshot-unavailable',\n    catalogStats: { categories: categories.length, products: products.length, blogs: blogs.length },\n    existingSlugCount: existingSlugs.size,\n    existingSlugs: [...existingSlugs],\n  },\n}];"
+      },
+      "id": "select-topic",
+      "name": "Discover & Select Topic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LLM_API_URL || 'https://openrouter.ai/api/v1/chat/completions' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.LLM_API_KEY || $env.OPENROUTER_API_KEY }}"
+            },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "HTTP-Referer", "value": "https://lucaloupe.com" },
+            { "name": "X-Title", "value": "Luca Loupe SEO Blog" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $env.LLM_MODEL || 'openrouter/free' }}\",\n  \"temperature\": 0.85,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"تو نویسندهی باتجربهی فروشگاه لوپ و تجهیزات دندان‌پزشکی هستی که برای مشتری ایرانی مینویسی. خروجی فقط JSON معتبر با کلیدهای: titleFa, introFa, contentFa, conclusionFa, excerptFa, metaDescriptionFa, metaKeywordsFa, titleEn, introEn, contentEn, conclusionEn, excerptEn, metaDescriptionEn, metaKeywordsEn, slug.\\n\\nسبک نوشتار (خیلی مهم):\\n- مثل یک فروشنده/مشاور واقعی بنویس؛ لحن محاورهای مودبانه، نه مقالهی رباتیک.\\n- از کلیشههای هوش مصنوعی پرهیز کن: در دنیای امروز، در نتیجه، به طور کلی، ضروری است، بهتر است بدانید، جامع، بینظیر، تحولآفرین، در این مقاله میخواهیم.\\n- جملهها طول متغیر داشته باشند؛ گاهی کوتاه و کاربردی.\\n- تجربهی عملی بده (شستشو، نگهداری، هدیه، چیدمان میز) نه تعریفهای عمومی.\\n- کلیدواژه را طبیعی و کم جا بده؛ stuffing ممنوع.\\n- فارسی اصلی و قوی باشد؛ انگلیسی خلاصهتر ولی طبیعی.\\n\\nساختار اجباری:\\n- contentFa و contentEn بهصورت HTML با H2/H3\\n- حداقل یک لینک داخلی به /categories/ یا /products/\\n- بخش FAQ دقیقا با <h2>سوالات متداول</h2> و ۵ تا ۸ سؤال با <h3> و پاسخ <p>\\n- metaDescriptionFa بین ۷۰ تا ۱۶۰ کاراکتر\\n- excerpt حداکثر ۱۶۰ کاراکتر\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"کلمه کلیدی اصلی: {{ $('Discover & Select Topic').first().json.selectedKeyword }}. اسلاگ اجباری (دقیقا همین را در فیلد slug بگذار و عوض نکن): {{ $('Discover & Select Topic').first().json.slug }}. این کلمه کلیدی از پیشنهاد خودکار گوگل / تقاضای جستجو آمده؛ حول همین عبارت بنویس و عنوان را نزدیک به همان نگه دار.\\nمنبع موضوع: {{ $('Discover & Select Topic').first().json.topicSource }} / intent={{ $('Discover & Select Topic').first().json.intent }}.\\nبریف SEO: {{ $('Discover & Select Topic').first().json.contentBrief }}.\\nاگر relatedProduct/relatedCategory داری، حداقل یک لینک داخلی واقعی به /products/ یا /categories/ بگذار.\\nمخاطب: خریداران ایرانی لوپ و تجهیزات دندان‌پزشکی.\\nحداقل‌ها را رعایت کن: introFa >= 100 کاراکتر، contentFa متن خالص >= 700 کاراکتر، conclusionFa >= 80 کاراکتر، metaDescriptionFa بین 70 تا 160 کاراکتر، و حتما FAQ با عنوان سوالات متداول.\"\n    }{{ $json.llmFeedback ? (($json.llmFeedback.previousOutput ? ',\\n    ' + JSON.stringify({ role: 'assistant', content: $json.llmFeedback.previousOutput }) : '') + ',\\n    ' + JSON.stringify({ role: 'user', content: $json.llmFeedback.instruction })) : '' }}\n  ]\n}",
+        "options": {}
+      },
+      "id": "llm-generate",
+      "name": "Generate Article (LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1760, 300],
+      "notes": "On retry (input has llmFeedback) the previous answer + the error are appended to messages. HTTP errors go to 'Collect Error for LLM'.",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json; // newest 'Generate Article (LLM)' answer (direct parent)\nlet content = String(raw.choices?.[0]?.message?.content || '').trim();\nif (!content) throw new Error('LLM returned empty content');\ncontent = content.replace(/<\\/?div[^>]*>/gi, ' ').trim();\nconst fence = content.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\nif (fence) content = fence[1].trim();\nconst extractJsonObject = (text) => {\n  const start = text.indexOf('{');\n  if (start < 0) throw new Error('LLM did not return valid JSON');\n  let depth = 0, inStr = false, esc = false;\n  for (let i = start; i < text.length; i++) {\n    const ch = text[i];\n    if (inStr) {\n      if (esc) { esc = false; continue; }\n      if (ch === '\\\\') { esc = true; continue; }\n      if (ch === '\"') inStr = false;\n      continue;\n    }\n    if (ch === '\"') { inStr = true; continue; }\n    if (ch === '{') depth++;\n    else if (ch === '}') {\n      depth--;\n      if (depth === 0) return text.slice(start, i + 1);\n    }\n  }\n  throw new Error('LLM did not return valid JSON');\n};\nlet article;\ntry { article = JSON.parse(extractJsonObject(content)); } catch (e) { throw new Error('LLM did not return valid JSON'); }\nconst ctx = $('Discover & Select Topic').first().json;\n\nconst normalizeSlug = (value) => String(value || '')\n  .normalize('NFKC')\n  .replace(/[\\u200c\\u200d\\u200e\\u200f\\ufeff]/g, '')\n  .toLowerCase()\n  .trim()\n  .replace(/\\s+/g, '-')\n  .replace(/[^\\u0600-\\u06FFa-z0-9-]/gi, '')\n  .replace(/-+/g, '-')\n  .replace(/^-|-$/g, '');\nconst reserved = new Set(($('Discover & Select Topic').first().json.existingSlugs || []).map(normalizeSlug).filter(Boolean));\nconst lockSlug = (() => {\n  const preferred = normalizeSlug(ctx.slug) || normalizeSlug(ctx.selectedKeyword) || 'blog-dental-loupes';\n  if (!reserved.has(preferred)) return preferred;\n  const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');\n  let c = preferred + '-' + day;\n  if (!reserved.has(c)) return c;\n  for (let i = 2; i <= 50; i++) {\n    c = preferred + '-' + day + '-' + i;\n    if (!reserved.has(c)) return c;\n  }\n  return preferred + '-' + Date.now();\n})();\n\nconst keyword = ctx.selectedKeyword || 'لوپ دندان‌پزشکی';\n\nconst stripHtml = (s) => String(s || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\\s+/g, ' ').trim();\nconst ensureMeta = (s, fallback) => {\n  let t = String(s || fallback || '').trim();\n  if (t.length < 70) {\n    t = `${t} راهنمای کاربردی انتخاب، خرید و نگهداری ${keyword} برای دندان‌پزشکان.`.replace(/\\s+/g, ' ').trim();\n  }\n  if (t.length > 160) t = t.slice(0, 157).trim() + '...';\n  if (t.length < 70) t = (t + ' راهنمای کامل لوپ و تجهیزات دندان‌پزشکی برای خرید هوشمند.').slice(0, 160);\n  return t;\n};\nconst ensureContent = (html) => {\n  let c = String(html || '').trim();\n  if (!/href\\s*=\\s*[\"'][^\"']*\\/(products|categories|blog)\\//i.test(c)) {\n    c = `<p>برای دیدن گزینه‌های مرتبط، به <a href=\"/categories/\">دسته‌بندی لوپ‌ها</a> سر بزنید.</p>` + c;\n  }\n  if (!/<h2[^>]*>\\s*(سوالات متداول|پرسش‌های متداول|faq)/i.test(c)) {\n    c += `<h2>سوالات متداول</h2>\n<h3>${keyword} برای چه استفاده‌ای مناسب است؟</h3>\n<p>بیشتر برای کارهای دقیق بالینی مانند ترمیمی، اندو و جراحی کاربرد دارد و اگر درست نگهداری شود وضوح تصویر خود را حفظ می‌کند.</p>\n<h3>چطور ${keyword} را بشوییم؟</h3>\n<p>شستشوی دستی با اسفنج نرم و شوینده ملایم معمولاً ایمن‌تر است؛ از ضربه‌های ناگهانی و شوک دمایی شدید پرهیز کنید.</p>\n<h3>موقع خرید به چه نکاتی توجه کنیم؟</h3>\n<p>بزرگ‌نمایی، میدان دید، فاصله کاری، وزن و سازگاری با هدلایت از مهم‌ترین معیارها هستند.</p>\n<h3>آیا برای هدیه مناسب است؟</h3>\n<p>بله، مخصوصاً اگر بسته‌بندی محکم و ظاهر شکیل داشته باشد و با سلیقه میزبان هماهنگ باشد.</p>\n<h3>چطور براقیت آن حفظ شود؟</h3>\n<p>بعد از شستشو با پارچه نرم خشک کنید و از اسکاچ زبر یا مواد بسیار اسیدی دوری کنید.</p>`;\n  }\n  let guard = 0;\n  while (stripHtml(c).length < 520 && guard < 8) {\n    c += `<p>در انتخاب ${keyword} بهتر است به نوع کار بالینی، فاصله کاری و راحتی استفاده در جلسات طولانی فکر کنید. مدل‌های ساده‌تر معمولاً همه‌کاره‌ترند و با سرویس‌های مختلف بهتر ست می‌شوند.</p>`;\n    guard += 1;\n  }\n  return c;\n};\n\nconst introFa = article.introFa || `اگر به دنبال ${keyword} هستید، این راهنما کمک می‌کند انتخاب کاربردی‌تری داشته باشید و بعد از خرید هم بهتر از آن نگهداری کنید.`;\nconst conclusionFa = article.conclusionFa || `در نهایت، ${keyword} وقتی ارزش خرید دارد که هم با فضای خانه هماهنگ باشد و هم نگهداری‌اش برای شما سخت نباشد.`;\nconst contentFa = ensureContent(article.contentFa);\nconst metaDescriptionFa = ensureMeta(article.metaDescriptionFa, introFa);\nconst excerptFa = ensureMeta(article.excerptFa || metaDescriptionFa, metaDescriptionFa).slice(0, 160);\n\nconst normalized = {\n  ...article,\n  titleFa: article.titleFa || keyword,\n  introFa,\n  contentFa,\n  conclusionFa,\n  excerptFa,\n  metaDescriptionFa,\n  metaKeywordsFa: article.metaKeywordsFa || `${keyword}, لوپ دندان‌پزشکی, هدلایت دندان‌پزشکی, خرید لوپ`,\n  titleEn: article.titleEn || keyword,\n  introEn: article.introEn || introFa,\n  contentEn: ensureContent(article.contentEn || contentFa),\n  conclusionEn: article.conclusionEn || conclusionFa,\n  excerptEn: ensureMeta(article.excerptEn || article.metaDescriptionEn || excerptFa, excerptFa).slice(0, 160),\n  metaDescriptionEn: ensureMeta(article.metaDescriptionEn || metaDescriptionFa, metaDescriptionFa),\n  metaKeywordsEn: article.metaKeywordsEn || article.metaKeywordsFa || keyword,\n  slug: lockSlug,\n  primaryKeyword: keyword,\n};\n\nconst hasKw = (s) => stripHtml(s).includes(keyword);\nif (!hasKw(normalized.titleFa)) normalized.titleFa = keyword + \" | \" + normalized.titleFa;\nif (!hasKw(normalized.introFa)) normalized.introFa = keyword + \": \" + normalized.introFa;\nif (!hasKw(normalized.contentFa)) {\n  normalized.contentFa = \"<p>موضوع این راهنما \" + keyword + \" است.</p>\" + normalized.contentFa;\n}\nif (!hasKw(normalized.metaDescriptionFa)) {\n  normalized.metaDescriptionFa = ensureMeta(keyword + \". \" + normalized.metaDescriptionFa, normalized.introFa);\n}\nif (!hasKw(normalized.excerptFa)) {\n  normalized.excerptFa = ensureMeta(keyword + \". \" + normalized.excerptFa, normalized.metaDescriptionFa).slice(0, 160);\n}\n\nreturn [{\n  json: {\n    ...ctx,\n    article: normalized,\n  }\n}];"
+      },
+      "id": "parse-article",
+      "name": "Parse Article JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.apiBase }}/Blogs/validate-content",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ...$json.article, primaryKeyword: $json.selectedKeyword }) }}",
+        "options": {}
+      },
+      "id": "validate",
+      "name": "Quality Gates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2420, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.data?.isValid ?? $json.isValid }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-valid",
+      "name": "Is Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2640, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Ensure Unique Slug').first().json.apiBase }}/Blogs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Ensure Unique Slug').first().json.token }}"
+            }
+          ]
+        },
+        "contentType": "multipart-form-data",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "TitleFa", "value": "={{ $('Ensure Unique Slug').first().json.article.titleFa }}" },
+            { "name": "IntroFa", "value": "={{ $('Ensure Unique Slug').first().json.article.introFa }}" },
+            { "name": "ContentFa", "value": "={{ $('Ensure Unique Slug').first().json.article.contentFa }}" },
+            { "name": "ConclusionFa", "value": "={{ $('Ensure Unique Slug').first().json.article.conclusionFa }}" },
+            { "name": "ExcerptFa", "value": "={{ $('Ensure Unique Slug').first().json.article.excerptFa }}" },
+            { "name": "MetaDescriptionFa", "value": "={{ $('Ensure Unique Slug').first().json.article.metaDescriptionFa }}" },
+            { "name": "MetaKeywordsFa", "value": "={{ $('Ensure Unique Slug').first().json.article.metaKeywordsFa }}" },
+            { "name": "TitleEn", "value": "={{ $('Ensure Unique Slug').first().json.article.titleEn }}" },
+            { "name": "IntroEn", "value": "={{ $('Ensure Unique Slug').first().json.article.introEn }}" },
+            { "name": "ContentEn", "value": "={{ $('Ensure Unique Slug').first().json.article.contentEn }}" },
+            { "name": "ConclusionEn", "value": "={{ $('Ensure Unique Slug').first().json.article.conclusionEn }}" },
+            { "name": "ExcerptEn", "value": "={{ $('Ensure Unique Slug').first().json.article.excerptEn }}" },
+            { "name": "MetaDescriptionEn", "value": "={{ $('Ensure Unique Slug').first().json.article.metaDescriptionEn }}" },
+            { "name": "MetaKeywordsEn", "value": "={{ $('Ensure Unique Slug').first().json.article.metaKeywordsEn }}" },
+            { "name": "Slug", "value": "={{ $('Ensure Unique Slug').first().json.article.slug }}" },
+            { "name": "IsDraft", "value": "true" },
+            { "name": "Source", "value": "ai-pipeline" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "create-draft",
+      "name": "Create Draft Blog",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2860, 200],
+      "notes": "Creates the draft (no thumbnail - add images manually later). Data comes from 'Ensure Unique Slug' (article + unique slug + token).",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Ensure Unique Slug\n// Runs right before \"Quality Gates\". Makes sure article.slug is not already used by a blog\n// (checks GET /Blogs/getslugs?includeInactive=true + GET /Blogs/{slug}) and appends -2, -3, ...\n// if it is. It is re-entered from \"Slug Conflict?\" (max 4 retries) when validate-content still\n// reports \"Slug '...' already exists.\"; retries use a date+random suffix.\nconst MAX_NUMERIC_SUFFIX = 50;\nconst MAX_SLUG_LEN = 200; // Blogs.Slug is varchar(200)\n\nconst ctx = $('Parse Article JSON').first().json;\nconst article = { ...(ctx.article || {}) };\nconst apiBase = ctx.apiBase;\nconst token = ctx.token;\nconst inJson = $input.first().json || {};\nconst isSlugRetry = !inJson.article && Array.isArray(inJson.data?.errors); // came from \"Slug Conflict?\"\nconst attempt = isSlugRetry ? Math.max(1, $runIndex) : 0; // 0 = first pass for this article\nconst headers = token ? { Authorization: `Bearer ${token}` } : {};\n\nconst normalizeSlug = (value) => String(value || '')\n  .normalize('NFKC')\n  .replace(/[\\u200c\\u200d\\u200e\\u200f\\ufeff]/g, '')\n  .toLowerCase()\n  .trim()\n  .replace(/\\s+/g, '-')\n  .replace(/[^\\u0600-\\u06FFa-z0-9-]/gi, '')\n  .replace(/-+/g, '-')\n  .replace(/^-|-$/g, '');\n// Comparison key only (does not change the slug): fold Arabic yeh/kaf to Persian.\nconst key = (s) => normalizeSlug(s).replace(/[\\u064A\\u0649]/g, '\\u06CC').replace(/\\u0643/g, '\\u06A9');\n\nconst today = new Date().toISOString().slice(0, 10).replace(/-/g, '');\nlet base = normalizeSlug(article.slug) || normalizeSlug(ctx.slug) || normalizeSlug(ctx.selectedKeyword) || `blog-${today}`;\nbase = base.slice(0, MAX_SLUG_LEN - 20).replace(/-+$/, '');\n\n// 1) Known slugs: list from the start of the run + a fresh list from the backend.\nconst taken = new Set((ctx.existingSlugs || []).map(key).filter(Boolean));\ntry {\n  const res = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${apiBase}/Blogs/getslugs`,\n    qs: { includeInactive: true },\n    headers,\n    json: true,\n  });\n  const list = res?.data ?? res ?? [];\n  for (const x of (Array.isArray(list) ? list : [])) {\n    const k = key(typeof x === 'string' ? x : x?.slug);\n    if (k) taken.add(k);\n  }\n} catch (e) { /* fall back to ctx.existingSlugs + per-slug check */ }\n\n// 2) On a retry, also mark the slug that validate-content rejected.\nconst rejected = [];\nif (attempt > 0) {\n  const q = $input.first().json || {};\n  if (q.data?.metrics?.slug) rejected.push(q.data.metrics.slug);\n  for (const err of (q.data?.errors || q.errors || [])) {\n    const m = String(err).match(/Slug\\s+'([^']+)'/i);\n    if (m) rejected.push(m[1]);\n  }\n  for (const r of rejected) taken.add(key(r));\n}\n\n// 3) Ask the backend directly for one slug (public endpoint; 200 + data:null when free).\nconst existsOnServer = async (slug) => {\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'GET',\n      url: `${apiBase}/Blogs/${encodeURIComponent(slug)}`,\n      headers,\n      json: true,\n    });\n    return Boolean(res && res.isSuccess !== false && res.data);\n  } catch (e) {\n    const status = e?.httpCode ?? e?.response?.status ?? e?.statusCode;\n    if (String(status) === '404') return false;\n    return null; // unknown (network error) -> rely on the slug list\n  }\n};\n\nconst candidates = [];\nif (attempt === 0) {\n  candidates.push(base);\n  for (let i = 2; i <= MAX_NUMERIC_SUFFIX; i++) candidates.push(`${base}-${i}`);\n} else {\n  for (let i = 0; i < 10; i++) {\n    candidates.push(`${base}-${today}-${Math.random().toString(36).slice(2, 6)}`);\n  }\n}\n\nconst checked = [];\nlet chosen = null;\nfor (const c of candidates) {\n  if (taken.has(key(c))) { checked.push({ slug: c, taken: 'list' }); continue; }\n  const exists = await existsOnServer(c);\n  checked.push({ slug: c, taken: exists === true ? 'server' : false });\n  if (exists !== true) { chosen = c; break; }\n}\nif (!chosen) chosen = `${base}-${Date.now().toString(36)}`;\n\nreturn [{\n  json: {\n    ...ctx,\n    slug: chosen,\n    article: { ...article, slug: chosen },\n    slugCheck: { originalSlug: article.slug || null, base, chosen, attempt, rejected, checked: checked.slice(0, 10) },\n  },\n}];\n"
+      },
+      "id": "ensure-unique-slug",
+      "name": "Ensure Unique Slug",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 300],
+      "notes": "Checks /Blogs/getslugs + /Blogs/{slug}; appends -2,-3,... until free. Re-entered from 'Slug Conflict?' (max 4 retries) with date+random suffix.",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ (($json.data?.errors || $json.errors || []).length > 0) && ($json.data?.errors || $json.errors || []).every(e => /slug/i.test(String(e)) && /(exist|duplicate|taken|unique)/i.test(String(e))) && $runIndex < 4 }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "slug-conflict",
+      "name": "Slug Conflict?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2860, 420],
+      "notes": "true = the ONLY validation errors are 'slug already exists' and fewer than 4 slug retries in this execution -> back to Ensure Unique Slug (no LLM call). Otherwise -> Collect Error for LLM."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collect Error for LLM\n// Receives the error output of every node after \"Generate Article (LLM)\" (plus validation failures and\n// a non-successful draft response) and builds feedback for the next LLM attempt.\n// One run of this node == one failed LLM attempt, so $runIndex + 1 = failed attempts so far.\nconst MAX_ATTEMPTS = 3;      // total LLM attempts (initial + 2 retries)\nconst PREV_MAX = 6000;       // max chars of the previous LLM answer sent back\n\nconst j = $input.first()?.json || {};\nlet prev = '';\ntry { prev = String($prevNode?.name || ''); } catch (e) { prev = ''; }\n\n// Count how many times the LLM node ran (robust second counter).\nlet llmRuns = 0;\nfor (let k = 0; k < 20; k++) {\n  try { $('Generate Article (LLM)').all(0, k); llmRuns = k + 1; }\n  catch (e) { if (/Run \\d+ of node/.test(String(e?.message))) break; llmRuns = k + 1; }\n}\nconst attempt = Math.max($runIndex + 1, llmRuns, 1);\n\nconst data = j.data && typeof j.data === 'object' ? j.data : {};\nlet failedNode = prev || 'unknown';\nlet kind = 'error';\nlet message = '';\nconst details = {};\n\nconst validationFrom = (d) => {\n  const list = Array.isArray(d.errors) && d.errors.length ? d.errors.map(String) : [String(j.error || 'Quality gate failed')];\n  message = list.join(' | ');\n  details.errors = list;\n  if (Array.isArray(d.warnings) && d.warnings.length) details.warnings = d.warnings.map(String);\n  if (d.metrics) details.metrics = d.metrics;\n};\nconst errorFrom = (e) => {\n  if (typeof e === 'string') { message = e; return; }\n  if (e && typeof e === 'object') {\n    message = String(e.message || e.description || JSON.stringify(e));\n    if (e.description && e.description !== e.message) details.description = String(e.description).slice(0, 1000);\n    const status = e.httpCode ?? e.status ?? e.statusCode ?? e.context?.httpCode;\n    if (status != null) details.httpStatus = String(status);\n    return;\n  }\n  message = String(j.message || JSON.stringify(j).slice(0, 500));\n};\n\nif (prev === 'Draft Created?') {\n  // POST /Blogs answered but isSuccess=false\n  failedNode = 'Create Draft Blog';\n  kind = 'api';\n  message = String((typeof j.error === 'string' ? j.error : j.error?.message) || j.message || 'Backend did not confirm the draft (isSuccess=false)');\n  details.response = JSON.stringify(j).slice(0, 1500);\n} else if (prev === 'Slug Conflict?') {\n  // validate-content returned isValid=false (not a pure slug conflict)\n  failedNode = 'Quality Gates (validate-content)';\n  kind = 'validation';\n  validationFrom(data);\n} else if (j.error) {\n  // error output of a node (item json = input item + error)\n  errorFrom(j.error);\n  if (prev === 'Generate Article (LLM)') kind = 'llm_http';\n  else if (prev === 'Parse Article JSON') kind = 'parse';\n  else if (prev === 'Ensure Unique Slug') kind = 'code';\n  else if (prev === 'Quality Gates' || prev === 'Create Draft Blog') kind = 'api';\n} else if (data.isValid === false) {\n  failedNode = 'Quality Gates (validate-content)';\n  kind = 'validation';\n  validationFrom(data);\n} else {\n  errorFrom(undefined);\n}\nmessage = (message || 'Unknown error').slice(0, 2000);\n\n// Newest LLM answer (main output 0 of the latest run). Skipped when the LLM request itself failed.\nlet previousOutput = '', previousModel = '';\nif (kind !== 'llm_http') {\n  try {\n    const r = $('Generate Article (LLM)').last(0)?.json || {};\n    const m = r.choices?.[0]?.message || {};\n    previousOutput = String(m.content || m.reasoning || '');\n    previousModel = String(r.model || '');\n  } catch (e) { /* no previous output */ }\n}\nif (previousOutput.length > PREV_MAX) {\n  previousOutput = previousOutput.slice(0, 2000) + '\\n…[truncated]…\\n' + previousOutput.slice(-(PREV_MAX - 2000));\n}\n\nconst topic = $('Discover & Select Topic').first().json;\nconst KEYS = 'titleFa, introFa, contentFa, conclusionFa, excerptFa, metaDescriptionFa, metaKeywordsFa, titleEn, introEn, contentEn, conclusionEn, excerptEn, metaDescriptionEn, metaKeywordsEn, slug';\n\nlet instruction = `پاسخ قبلی تو در مرحله «${failedNode}» خطا داد. مشکل را برطرف کن و دوباره بنویس.\\n`\n  + `Your previous answer failed at node \"${failedNode}\" with error:\\n${message}\\n`;\nif (kind === 'validation') {\n  instruction += `\\nFix ALL of the content problems listed above. Rules: introFa at least 80 characters of text; `\n    + `contentFa at least 500 characters of text, HTML with H2/H3, a FAQ section with the exact heading <h2>سوالات متداول</h2>, `\n    + `and at least one internal link to /products/ or /categories/; conclusionFa at least 60 characters; `\n    + `metaDescriptionFa between 70 and 160 characters; excerptFa at most 160 characters; metaKeywordsFa 3-12 comma-separated keywords.\\n`;\n} else if (kind === 'parse') {\n  instruction += `\\nYour answer could not be parsed as JSON (or required keys were missing).\\n`;\n} else if (kind === 'llm_http') {\n  instruction += `\\nThe previous request failed before an answer was produced (HTTP/provider error). Write the article now.\\n`;\n}\ninstruction += `\\nReturn ONLY one valid JSON object (no markdown fences, no explanations, no text before or after) `\n  + `with all required keys: ${KEYS}. The slug must be exactly: ${topic.slug || ''}. `\n  + `Escape double quotes inside string values as \\\\\" and do not put raw line breaks inside strings.`;\n\nreturn [{\n  json: {\n    ...topic,\n    llmFeedback: {\n      attempt,\n      maxAttempts: MAX_ATTEMPTS,\n      failedNode,\n      kind,\n      error: message,\n      details,\n      previousModel,\n      previousOutput,\n      instruction,\n      at: new Date().toISOString(),\n    },\n  },\n}];\n"
+      },
+      "id": "collect-error-llm",
+      "name": "Collect Error for LLM",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3080, 640],
+      "notes": "Builds llmFeedback (failed node, error, HTTP status, validation errors, previous LLM answer, attempt) + original topic fields."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.llmFeedback.attempt < $json.llmFeedback.maxAttempts }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "retry-llm",
+      "name": "Retry LLM?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [3300, 640],
+      "notes": "Max 3 LLM attempts in total (initial + 2 retries)."
+    },
+    {
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "={{ 'AI Blog: gave up after ' + $json.llmFeedback.attempt + ' LLM attempt(s). Last failure at \"' + $json.llmFeedback.failedNode + '\" (' + $json.llmFeedback.kind + '): ' + String($json.llmFeedback.error).slice(0, 800) }}"
+      },
+      "id": "stop-llm-retries",
+      "name": "Stop: LLM Retries Exhausted",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [3520, 740]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isSuccess !== false }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "draft-created",
+      "name": "Draft Created?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [3080, 200],
+      "notes": "Backend answers {data,isSuccess,error}; isSuccess=false is treated as a failure and sent to the LLM feedback loop."
+    }
+  ],
+  "connections": {
+    "Daily 08:00": {
+      "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
+    },
+    "Run Now": {
+      "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
+    },
+    "Config": {
+      "main": [[{ "node": "Login Content Bot", "type": "main", "index": 0 }]]
+    },
+    "Login Content Bot": {
+      "main": [[{ "node": "Store Token", "type": "main", "index": 0 }]]
+    },
+    "Store Token": {
+      "main": [[{ "node": "Get Existing Slugs", "type": "main", "index": 0 }]]
+    },
+    "Get Existing Slugs": {
+      "main": [[{ "node": "Discover & Select Topic", "type": "main", "index": 0 }]]
+    },
+    "Keyword Suggest": {
+      "main": [[{ "node": "Discover & Select Topic", "type": "main", "index": 0 }]]
+    },
+    "Generate Article (LLM)": {
+      "main": [
+        [{ "node": "Parse Article JSON", "type": "main", "index": 0 }],
+        [{ "node": "Collect Error for LLM", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Article JSON": {
+      "main": [
+        [{ "node": "Ensure Unique Slug", "type": "main", "index": 0 }],
+        [{ "node": "Collect Error for LLM", "type": "main", "index": 0 }]
+      ]
+    },
+    "Quality Gates": {
+      "main": [
+        [{ "node": "Is Valid?", "type": "main", "index": 0 }],
+        [{ "node": "Collect Error for LLM", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is Valid?": {
+      "main": [
+        [{ "node": "Create Draft Blog", "type": "main", "index": 0 }],
+        [{ "node": "Slug Conflict?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Discover & Select Topic": {
+      "main": [[{ "node": "Generate Article (LLM)", "type": "main", "index": 0 }]]
+    },
+    "Ensure Unique Slug": {
+      "main": [
+        [{ "node": "Quality Gates", "type": "main", "index": 0 }],
+        [{ "node": "Collect Error for LLM", "type": "main", "index": 0 }]
+      ]
+    },
+    "Slug Conflict?": {
+      "main": [
+        [{ "node": "Ensure Unique Slug", "type": "main", "index": 0 }],
+        [{ "node": "Collect Error for LLM", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create Draft Blog": {
+      "main": [
+        [{ "node": "Draft Created?", "type": "main", "index": 0 }],
+        [{ "node": "Collect Error for LLM", "type": "main", "index": 0 }]
+      ]
+    },
+    "Draft Created?": {
+      "main": [
+        [],
+        [{ "node": "Collect Error for LLM", "type": "main", "index": 0 }]
+      ]
+    },
+    "Collect Error for LLM": {
+      "main": [[{ "node": "Retry LLM?", "type": "main", "index": 0 }]]
+    },
+    "Retry LLM?": {
+      "main": [
+        [{ "node": "Generate Article (LLM)", "type": "main", "index": 0 }],
+        [{ "node": "Stop: LLM Retries Exhausted", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": {
+    "node:Daily 08:00": {
+      "recurrenceRules": [null],
+      "recurrenceRuleSignatures": [null]
+    }
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {}
+}

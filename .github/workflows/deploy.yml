@@ -1,0 +1,146 @@
+# Deploy candyRose infra / images to the VPS.
+#
+# This repository does NOT contain FrontEnd/BackEnd source.
+# App images are built elsewhere, pushed to Docker Hub as:
+#   <DOCKER_USERNAME>/shop-frontend:<git-sha>
+#   <DOCKER_USERNAME>/shop-backend:<git-sha>
+# Then this workflow deploys that tag via ./deploy.sh <service> <sha>
+#
+# Triggers:
+#   1) push to master (infra paths) → git pull + recreate nginx
+#   2) workflow_dispatch → manual deploy from Actions UI
+#   3) repository_dispatch (type: deploy) → called from an app repo after build/push
+#
+# Required GitHub secrets:
+#   VPS_HOST, VPS_USER, SSH_PRIVATE_KEY, VPS_PORT
+#
+# Optional (app repo calling this one):
+#   In the app repo, after docker push of :${{ github.sha }}, fire:
+#     repository: hamidrezafallahi/candyRose
+#     event-type: deploy
+#     client-payload: { "service": "frontend"|"backend"|"all", "image_tag": "<sha>" }
+
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "docker/**"
+      - "docker-compose.prod.yml"
+      - "docker-compose.automation.yml"
+      - "docker-compose.tools.yml"
+      - "deploy.sh"
+      - "nginx_configs/**"
+      - "automation/n8n/**"
+      - ".github/workflows/deploy.yml"
+
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "What to deploy"
+        required: true
+        type: choice
+        options:
+          - infra
+          - frontend
+          - backend
+          - all
+          - nginx
+          - automation
+        default: infra
+      image_tag:
+        description: "Docker image tag (full git SHA). Required for frontend/backend/all"
+        required: false
+        type: string
+
+  repository_dispatch:
+    types: [deploy]
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve deploy parameters
+        id: params
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TARGET="${{ inputs.target }}"
+            TAG="${{ inputs.image_tag }}"
+          elif [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            TARGET="${{ github.event.client_payload.service }}"
+            TAG="${{ github.event.client_payload.image_tag }}"
+          else
+            # push (infra): sync repo on VPS and reload nginx
+            TARGET="infra"
+            TAG=""
+          fi
+
+          if [[ -z "${TARGET}" ]]; then
+            echo "ERROR: deploy target/service is empty"
+            exit 1
+          fi
+
+          case "${TARGET}" in
+            frontend|backend|all)
+              if [[ -z "${TAG}" ]]; then
+                echo "ERROR: image_tag (git SHA) is required for target=${TARGET}"
+                exit 1
+              fi
+              ;;
+            infra|nginx|automation)
+              ;;
+            *)
+              echo "ERROR: unknown target '${TARGET}' (use frontend|backend|all|infra|nginx|automation)"
+              exit 1
+              ;;
+          esac
+
+          echo "target=${TARGET}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved target=${TARGET} image_tag=${TAG:-<none>}"
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DEPLOY_TARGET: ${{ steps.params.outputs.target }}
+          IMAGE_TAG: ${{ steps.params.outputs.image_tag }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          envs: DEPLOY_TARGET,IMAGE_TAG
+          script: |
+            set -euo pipefail
+            cd /opt/shop
+
+            echo "Syncing infra repo..."
+            git fetch --all --prune
+            git pull --ff-only origin master
+
+            chmod +x deploy.sh
+
+            echo "Deploy target=${DEPLOY_TARGET} tag=${IMAGE_TAG:-<none>}"
+
+            case "${DEPLOY_TARGET}" in
+              infra|nginx)
+                ./deploy.sh nginx
+                ;;
+              frontend|backend|all)
+                ./deploy.sh "${DEPLOY_TARGET}" "${IMAGE_TAG}"
+                ;;
+              automation)
+                ./deploy.sh automation recreate
+                ;;
+              *)
+                echo "ERROR: unsupported DEPLOY_TARGET=${DEPLOY_TARGET}"
+                exit 1
+                ;;
+            esac

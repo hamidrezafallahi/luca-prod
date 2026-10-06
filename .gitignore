@@ -1,0 +1,14 @@
+# candyRose — never commit real secrets
+.env
+.env.*
+!.env.example
+secrets.txt
+**/secrets.txt
+credentials.json
+*.pem
+!nginx_configs/ssl-dhparams.pem
+.deploy-state
+ROADMAP.md
+EXECUTION_REPORT.md
+USER_TODO.md
+DEPLOY.md

@@ -1,0 +1,171 @@
+{
+  "id": "seo-internal-links-weekly",
+  "name": "SEO Internal Links Weekly",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 11 * * 3"
+            }
+          ]
+        }
+      },
+      "id": "cron",
+      "name": "Wednesday 11:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "api",
+              "name": "apiBase",
+              "value": "={{ $env.API_BASE_URL || 'http://backend:8080/api' }}",
+              "type": "string"
+            },
+            {
+              "id": "hook",
+              "name": "alertWebhook",
+              "value": "={{ $env.SEO_ALERT_WEBHOOK_URL || '' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "config",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.apiBase }}/Identity/login",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"emailOrPhone\": \"{{ $env.CONTENT_BOT_EMAIL }}\",\n  \"password\": \"{{ $env.CONTENT_BOT_PASSWORD }}\"\n}",
+        "options": {}
+      },
+      "id": "login",
+      "name": "Login Content Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config').item.json.apiBase }}/SeoOps/refresh-candidates",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "staleDays",
+              "value": "={{ $env.SEO_STALE_DAYS || '90' }}"
+            },
+            {
+              "name": "take",
+              "value": "5"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.data.accessToken || $json.accessToken || $json.data?.accessToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "candidates",
+      "name": "Get Candidates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const token = $('Login Content Bot').item.json.data?.accessToken\n  || $('Login Content Bot').item.json.accessToken\n  || $('Login Content Bot').item.json.data?.accessToken;\nconst apiBase = $('Config').item.json.apiBase;\nconst payload = $input.first().json;\nlet items = payload.data || payload || [];\nif (!Array.isArray(items)) items = [];\n\n// Fallback: if no stale blogs, pull a few active blogs via snapshot weak list empty → skip\nif (!items.length) {\n  return [{ json: { skip: true, text: 'Internal links: no candidate blogs this week.', alertWebhook: $('Config').item.json.alertWebhook } }];\n}\n\nconst results = [];\nfor (const item of items.slice(0, 5)) {\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'GET',\n      url: `${apiBase}/SeoOps/internal-links/${item.id}`,\n      qs: { take: 5 },\n      headers: { Authorization: `Bearer ${token}` },\n      json: true,\n    });\n    const data = res.data || res;\n    results.push(data);\n  } catch (e) {\n    results.push({ blogId: item.id, blogSlug: item.slug, error: String(e.message || e) });\n  }\n}\n\nconst blocks = results.map((r) => {\n  if (r.error) return `• blog ${r.blogId}/${r.blogSlug}: ERROR ${r.error}`;\n  const links = (r.suggestions || []).map((s) => `   - [${s.score}] ${s.path} (${s.reason})`).join('\\n');\n  return [`• ${r.blogTitleFa} (/fa/blog/${r.blogSlug})`, `  existingLinks=${r.existingInternalLinkCount}`, links || '   - no suggestions'].join('\\n');\n});\n\nconst text = [\n  '🔗 Internal Link Suggestions (HUMAN GATE)',\n  'Apply manually in admin blog editor.',\n  '',\n  ...blocks\n].join('\\n');\n\nreturn [{ json: { skip: false, text, alertWebhook: $('Config').item.json.alertWebhook, results } }];"
+      },
+      "id": "suggest",
+      "name": "Fetch Link Suggestions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !$json.skip && !!$json.alertWebhook }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-send",
+      "name": "Send?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.alertWebhook }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.text) }}\n}",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Send Webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 200],
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "Wednesday 11:00": {
+      "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
+    },
+    "Config": {
+      "main": [[{ "node": "Login Content Bot", "type": "main", "index": 0 }]]
+    },
+    "Login Content Bot": {
+      "main": [[{ "node": "Get Candidates", "type": "main", "index": 0 }]]
+    },
+    "Get Candidates": {
+      "main": [[{ "node": "Fetch Link Suggestions", "type": "main", "index": 0 }]]
+    },
+    "Fetch Link Suggestions": {
+      "main": [[{ "node": "Send?", "type": "main", "index": 0 }]]
+    },
+    "Send?": {
+      "main": [
+        [{ "node": "Send Webhook", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Tehran"
+  },
+  "versionId": "1",
+  "tags": [{ "name": "seo" }, { "name": "internal-links" }]
+}

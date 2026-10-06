@@ -1,0 +1,461 @@
+{
+  "id": "shop-orders-digest",
+  "name": "Shop Orders Digest (Telegram 08:00)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron",
+      "name": "Daily 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "shop-orders-digest",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        420
+      ],
+      "webhookId": "shop-orders-digest"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst secret = $env.SHOP_OWNER_WEBHOOK_SECRET;\nconst headers = item.headers || {};\nconst body = (item.body && typeof item.body === 'object') ? item.body : item;\nconst isWebhook = !!(headers.host || headers.Host);\nconst headerSecret = String(headers['x-shop-webhook-secret'] || headers['X-Shop-Webhook-Secret'] || '');\nconst bodySecret = String(body.webhookSecret || '');\nconst authorized = isWebhook\n  ? (!!secret && (headerSecret === secret || bodySecret === secret))\n  : true;\n\nlet hours = (!isWebhook || body.hours === undefined || body.hours === '') ? 24 : Number(body.hours);\nif (!Number.isFinite(hours) || hours < 0) hours = 24;\nlet limit = body.limit ? Number(body.limit) : 15;\nif (!Number.isInteger(limit) || limit <= 0) limit = 15;\nif (limit > 50) limit = 50;\nconst statusesRaw = String((isWebhook && body.statuses) ? body.statuses : 'pending,confirmed,paid');\n\nlet error = '';\nlet httpStatus = 200;\nif (isWebhook && !authorized) { error = 'Unauthorized webhook'; httpStatus = 401; }\n\nconst hasTelegram = !!(String($env.TELEGRAM_BOT_TOKEN || '').trim() && String($env.TELEGRAM_CHAT_ID || '').trim());\nif (!error && !hasTelegram) { error = 'TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not set'; httpStatus = 500; }\n\nreturn [{ json: {\n  ok: !error, error, httpStatus, isWebhook, hours, limit, statusesRaw, hasTelegram,\n  telegramChatId: String($env.TELEGRAM_CHAT_ID || '').trim(),\n  apiBase: $env.API_BASE_URL || 'http://backend:8080/api'\n} }];"
+      },
+      "id": "parse",
+      "name": "Parse Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.ok }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "ready",
+      "name": "Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error || 'Bad request' }) }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus || 400 }}"
+        }
+      },
+      "id": "respond-error",
+      "name": "Respond Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        900,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.apiBase }}/Identity/login",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"emailOrPhone\": \"{{ $env.CONTENT_BOT_EMAIL }}\",\n  \"password\": \"{{ $env.CONTENT_BOT_PASSWORD }}\"\n}",
+        "options": {}
+      },
+      "id": "login",
+      "name": "Login Content Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $('Parse Payload').item.json;\nconst login = $input.first().json;\nconst token = login.data?.accessToken || login.accessToken || login.data?.AccessToken;\nif (!token) return [{ json: { ok: false, httpStatus: 502, isWebhook: parsed.isWebhook, error: login.error || 'Login failed: no access token' } }];\nreturn [{ json: { ...parsed, accessToken: token } }];"
+      },
+      "id": "keep-context",
+      "name": "Keep Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !!$json.accessToken }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "logged-in",
+      "name": "Logged In?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $input.first().json;\nconst headers = { Authorization: `Bearer ${ctx.accessToken}` };\nconst api = ctx.apiBase;\nconst STATUS_FA = { 0: 'ثبت اولیه', 1: 'تایید شده', 2: 'پرداخت شده', 3: 'ارسال شده', 4: 'تحویل داده شده', 5: 'لغو شده' };\nconst NAME_TO_NUM = { pending: 0, confirmed: 1, paid: 2, shipped: 3, delivered: 4, cancelled: 5 };\nconst statusNum = (s) => {\n  if (typeof s === 'number' && Number.isFinite(s)) return s;\n  const k = String(s ?? '').trim().toLowerCase();\n  if (k in NAME_TO_NUM) return NAME_TO_NUM[k];\n  const n = Number(k);\n  return Number.isFinite(n) ? n : null;\n};\nconst statusFa = (s) => STATUS_FA[statusNum(s)] || String(s ?? '');\nconst money = (n) => Number(n || 0).toLocaleString('fa-IR');\nconst whenFa = (iso) => {\n  try { return new Date(iso).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran' }); }\n  catch { return String(iso || ''); }\n};\nconst unwrap = (res) => {\n  if (Array.isArray(res)) return res;\n  if (Array.isArray(res?.data)) return res.data;\n  if (Array.isArray(res?.data?.records)) return res.data.records;\n  return res?.data ?? res;\n};\nconst http = async (method, url) => {\n  const res = await this.helpers.httpRequest({\n    method, url, headers, json: true, ignoreHttpStatusErrors: true, returnFullResponse: true\n  });\n  const status = res.statusCode || res.status || 200;\n  const payload = res.body !== undefined ? res.body : res;\n  if (status >= 400) {\n    const err = payload?.error || payload?.title || payload?.message || `HTTP ${status}`;\n    const e = new Error(String(err));\n    e.statusCode = status;\n    throw e;\n  }\n  return payload;\n};\nconst itemLine = (it) => {\n  const name = it?.product?.name || it?.product?.Name || 'کالا';\n  const qty = it?.quantity ?? it?.Quantity ?? 1;\n  return `${name} ×${qty}`;\n};\n\ntry {\n  const wanted = String(ctx.statusesRaw || '')\n    .split(/[+,]/)\n    .map(s => statusNum(s.trim()))\n    .filter(n => n !== null);\n  const wantedSet = new Set(wanted.length ? wanted : [0, 1, 2]);\n  const raw = await http('GET', `${api}/Orders/open`);\n  const list = unwrap(raw) || [];\n  const all = Array.isArray(list) ? list : [];\n  const cutoff = ctx.hours > 0 ? Date.now() - ctx.hours * 3600 * 1000 : 0;\n  const filtered = all\n    .filter(o => wantedSet.has(statusNum(o.status)))\n    .filter(o => !cutoff || new Date(o.orderDate).getTime() >= cutoff)\n    .sort((a, b) => new Date(b.orderDate) - new Date(a.orderDate));\n  const sliced = filtered.slice(0, ctx.limit);\n  const counts = {};\n  for (const o of filtered) {\n    const k = statusFa(o.status);\n    counts[k] = (counts[k] || 0) + 1;\n  }\n  const lines = sliced.map(o => {\n    const items = (o.items || []).map(itemLine);\n    return [`#${o.id} ${statusFa(o.status)} — ${money(o.totalPrice)} — ${whenFa(o.orderDate)}`, items.length ? `  - ${items.join('\\n  - ')}` : '  - (بدون قلم)'].join('\\n');\n  });\n  const header = ctx.hours > 0\n    ? `خلاصه صبحگاهی سفارش‌ها (${ctx.hours} ساعت اخیر)`\n    : 'خلاصه صبحگاهی سفارش‌ها';\n  let textFa = filtered.length === 0\n    ? `${header}\\nموردی نیست.`\n    : [header, `تعداد: ${filtered.length}`, Object.entries(counts).map(([k, v]) => `${k}: ${v}`).join('، '), '', ...lines].join('\\n');\n  if (textFa.length > 4000) textFa = textFa.slice(0, 3990) + '\\n…';\n  return [{ json: {\n    ok: true, httpStatus: 200, isWebhook: ctx.isWebhook, hours: ctx.hours, total: filtered.length, counts,\n    telegramChatId: ctx.telegramChatId, textFa\n  } }];\n} catch (e) {\n  return [{ json: { ok: false, httpStatus: e.statusCode || 502, isWebhook: ctx.isWebhook, error: e.message || String(e) } }];\n}"
+      },
+      "id": "execute",
+      "name": "Load Orders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.ok }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "result-ok",
+      "name": "Result Ok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.telegramChatId, text: $json.textFa, disable_web_page_preview: true }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "telegram",
+      "name": "Send Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1780,
+        20
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const orders = $('Load Orders').item.json;\nconst tg = $input.first();\nconst status = tg.json.statusCode || tg.json.status || (tg.json.ok === false ? 502 : 200);\nconst body = tg.json.body !== undefined ? tg.json.body : tg.json;\nconst sent = status < 400 && body && body.ok !== false;\nreturn [{ json: {\n  ...orders,\n  telegramSent: !!sent,\n  telegramError: sent ? '' : String(body?.description || body?.error || tg.json.error || `HTTP ${status}`)\n} }];"
+      },
+      "id": "mark-telegram",
+      "name": "Mark Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !!$json.isWebhook }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "from-webhook",
+      "name": "From Webhook?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2220,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: $json.ok !== false && $json.telegramSent !== false, telegramSent: $json.telegramSent, total: $json.total, error: $json.telegramError || $json.error || '', textFa: $json.textFa }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2440,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !!$json.isWebhook }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "error-from-webhook",
+      "name": "Error From Webhook?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        680,
+        520
+      ]
+    }
+  ],
+  "connections": {
+    "Daily 08:00": {
+      "main": [
+        [
+          {
+            "node": "Parse Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Payload": {
+      "main": [
+        [
+          {
+            "node": "Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ready?": {
+      "main": [
+        [
+          {
+            "node": "Login Content Bot",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error From Webhook?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error From Webhook?": {
+      "main": [
+        [
+          {
+            "node": "Respond Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Login Content Bot": {
+      "main": [
+        [
+          {
+            "node": "Keep Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep Context": {
+      "main": [
+        [
+          {
+            "node": "Logged In?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Logged In?": {
+      "main": [
+        [
+          {
+            "node": "Load Orders",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error From Webhook?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Orders": {
+      "main": [
+        [
+          {
+            "node": "Result Ok?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result Ok?": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error From Webhook?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Telegram": {
+      "main": [
+        [
+          {
+            "node": "Mark Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Telegram": {
+      "main": [
+        [
+          {
+            "node": "From Webhook?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "From Webhook?": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Tehran"
+  },
+  "versionId": "p023-orders-digest",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": [
+    {
+      "name": "owner"
+    },
+    {
+      "name": "shop"
+    },
+    {
+      "name": "telegram"
+    }
+  ]
+}

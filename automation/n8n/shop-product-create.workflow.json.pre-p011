@@ -1,0 +1,397 @@
+{
+  "id": "shop-product-create",
+  "name": "Shop Product Create (Telegram owner)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "shop-product-create",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "shop-product-create"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst secret = $env.SHOP_OWNER_WEBHOOK_SECRET;\nconst headers = item.json.headers || {};\nconst body = (item.json.body && typeof item.json.body === 'object') ? item.json.body : item.json;\n\nconst headerSecret = String(\n  headers['x-shop-webhook-secret'] ||\n  headers['X-Shop-Webhook-Secret'] ||\n  ''\n);\nconst bodySecret = String(body.webhookSecret || item.json.webhookSecret || '');\nconst authorized = !!secret && (headerSecret === secret || bodySecret === secret);\n\nconst name = String(body.name || '').trim();\nconst description = String(body.description || name).trim();\nconst categoryId = Number(body.categoryId);\nconst brandId = Number(body.brandId);\nconst price = Number(body.price);\nconst inventory = Number(body.inventory);\nconst seoTitleFa = String(body.seoTitleFa || name).trim();\nconst metaDescriptionFa = String(body.metaDescriptionFa || description).slice(0, 160);\n\nlet error = '';\nlet httpStatus = 200;\nif (!authorized) {\n  error = 'Unauthorized webhook';\n  httpStatus = 401;\n} else if (!name || !Number.isFinite(categoryId) || categoryId <= 0 || !Number.isFinite(brandId) || brandId <= 0) {\n  error = 'name, categoryId and brandId are required';\n  httpStatus = 400;\n} else if (!Number.isFinite(price) || price < 0 || !Number.isInteger(inventory) || inventory < 0) {\n  error = 'price must be >= 0 and inventory must be a whole number >= 0';\n  httpStatus = 400;\n}\n\nconst binary = item.binary || {};\nlet imageBinary = null;\nif (binary.image) imageBinary = binary.image;\nelse if (binary.data) imageBinary = binary.data;\n\nlet hasImage = !!imageBinary;\nif (!hasImage && body.imageBase64) {\n  const raw = String(body.imageBase64).replace(/^data:[^;]+;base64,/, '');\n  const buf = Buffer.from(raw, 'base64');\n  const fileName = String(body.imageFileName || 'product.jpg');\n  const mime = String(body.imageMimeType || 'image/jpeg');\n  imageBinary = await this.helpers.prepareBinaryData(buf, fileName, mime);\n  hasImage = true;\n}\n\nconst out = {\n  json: {\n    ok: !error,\n    error,\n    httpStatus,\n    name,\n    description,\n    categoryId,\n    brandId,\n    price,\n    inventory,\n    seoTitleFa,\n    metaDescriptionFa,\n    hasImage,\n    apiBase: $env.API_BASE_URL || 'http://backend:8080/api',\n    siteBase: $env.CONTENT_ADMIN_BASE_URL || 'https://lucaloupe.com'\n  }\n};\nif (imageBinary) out.binary = { image: imageBinary };\nreturn [out];"
+      },
+      "id": "parse",
+      "name": "Parse Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.ok }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "ready",
+      "name": "Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error || 'Bad request' }) }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus || 400 }}"
+        }
+      },
+      "id": "respond-error",
+      "name": "Respond Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [660, 480]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.apiBase }}/Identity/login",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"emailOrPhone\": \"{{ $env.CONTENT_BOT_EMAIL }}\",\n  \"password\": \"{{ $env.CONTENT_BOT_PASSWORD }}\"\n}",
+        "options": {}
+      },
+      "id": "login",
+      "name": "Login Content Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $('Parse Payload').item.json;\nconst login = $input.first().json;\nconst token = login.data?.accessToken || login.accessToken || login.data?.AccessToken;\nif (!token) {\n  return [{ json: { ok: false, httpStatus: 502, error: login.error || 'Login failed: no access token' } }];\n}\nreturn [{\n  json: { ...parsed, accessToken: token },\n  binary: $('Parse Payload').item.binary\n}];"
+      },
+      "id": "keep-context",
+      "name": "Keep Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !!$json.accessToken }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "logged-in",
+      "name": "Logged In?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1100, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.apiBase }}/Products",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.accessToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ name: $json.name, description: $json.description, categoryId: $json.categoryId, brandId: $json.brandId, seoTitleFa: $json.seoTitleFa, metaDescriptionFa: $json.metaDescriptionFa, width: 0, height: 0, depth: 0, weight: 0 }) }}",
+        "options": {}
+      },
+      "id": "create-product",
+      "name": "Create Product",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 120]
+    },
+    {
+      "parameters": {
+        "jsCode": "const created = $input.first().json;\nconst ctx = $('Keep Context').item.json;\nconst id = created.data?.id || created.id;\nif (created.isSuccess === false || !id) {\n  return [{ json: { ok: false, httpStatus: 400, error: created.error || 'Create product failed' } }];\n}\nreturn [{\n  json: { ...ctx, ok: true, productId: id },\n  binary: $('Keep Context').item.binary\n}];"
+      },
+      "id": "attach-product",
+      "name": "Attach Product",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 120]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.ok }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "created-ok",
+      "name": "Created?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1760, 120]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.hasImage }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "has-image",
+      "name": "Has Image?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1980, 40]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.apiBase }}/ProductImages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.accessToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "ProductId",
+              "value": "={{ $json.productId }}"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "Images",
+              "inputDataFieldName": "image"
+            },
+            {
+              "name": "IsMainImages",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "upload-image",
+      "name": "Upload Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2200, -40],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Attach Product').item.json;\nlet imageError = '';\ntry {\n  const uploaded = $('Upload Image').item.json;\n  if (uploaded && uploaded.isSuccess === false) imageError = uploaded.error || 'Image upload failed';\n} catch (e) {\n  imageError = e.message || 'Image upload failed';\n}\nreturn [{ json: { ...ctx, imageError } }];"
+      },
+      "id": "after-image",
+      "name": "After Image",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2420, -40]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Attach Product').item.json;\nreturn [{ json: { ...ctx, imageError: '' } }];"
+      },
+      "id": "skip-image",
+      "name": "Skip Image",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 140]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.apiBase }}/ProductOffers",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.accessToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ productId: $json.productId, basePrice: $json.price, inventory: $json.inventory }) }}",
+        "options": {}
+      },
+      "id": "create-offer",
+      "name": "Create Offer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2640, 40]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Attach Product').item.json.apiBase }}/Products/{{ $('Attach Product').item.json.productId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Keep Context').item.json.accessToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-product",
+      "name": "Get Product",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2860, 40],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Attach Product').item.json;\nconst offerRes = $('Create Offer').item.json;\nconst productRes = $input.first().json;\nconst offerId = offerRes.data?.id || offerRes.id || null;\nconst product = productRes.data || productRes;\nconst slug = product.slug || '';\nlet imageError = '';\ntry { imageError = $('After Image').item.json.imageError || ''; } catch (e) {}\ntry { if (!imageError) imageError = $('Skip Image').item.json.imageError || ''; } catch (e) {}\nif (offerRes.isSuccess === false) {\n  return [{ json: { ok: false, httpStatus: 400, error: offerRes.error || 'Create offer failed', productId: ctx.productId } }];\n}\nconst url = slug ? `${ctx.siteBase.replace(/\\/$/, '')}/fa/products/${slug}` : `${ctx.siteBase.replace(/\\/$/, '')}/fa/products/${ctx.productId}`;\nreturn [{ json: {\n  ok: true,\n  httpStatus: 200,\n  productId: ctx.productId,\n  offerId,\n  slug,\n  name: ctx.name,\n  price: ctx.price,\n  inventory: ctx.inventory,\n  url,\n  imageError: imageError || undefined\n} }];"
+      },
+      "id": "build-result",
+      "name": "Build Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3080, 40]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.ok }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "result-ok",
+      "name": "Result Ok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [3300, 40]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [3520, -40]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Parse Payload", "type": "main", "index": 0 }]]
+    },
+    "Parse Payload": {
+      "main": [[{ "node": "Ready?", "type": "main", "index": 0 }]]
+    },
+    "Ready?": {
+      "main": [
+        [{ "node": "Login Content Bot", "type": "main", "index": 0 }],
+        [{ "node": "Respond Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Login Content Bot": {
+      "main": [[{ "node": "Keep Context", "type": "main", "index": 0 }]]
+    },
+    "Keep Context": {
+      "main": [[{ "node": "Logged In?", "type": "main", "index": 0 }]]
+    },
+    "Logged In?": {
+      "main": [
+        [{ "node": "Create Product", "type": "main", "index": 0 }],
+        [{ "node": "Respond Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create Product": {
+      "main": [[{ "node": "Attach Product", "type": "main", "index": 0 }]]
+    },
+    "Attach Product": {
+      "main": [[{ "node": "Created?", "type": "main", "index": 0 }]]
+    },
+    "Created?": {
+      "main": [
+        [{ "node": "Has Image?", "type": "main", "index": 0 }],
+        [{ "node": "Respond Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has Image?": {
+      "main": [
+        [{ "node": "Upload Image", "type": "main", "index": 0 }],
+        [{ "node": "Skip Image", "type": "main", "index": 0 }]
+      ]
+    },
+    "Upload Image": {
+      "main": [[{ "node": "After Image", "type": "main", "index": 0 }]]
+    },
+    "After Image": {
+      "main": [[{ "node": "Create Offer", "type": "main", "index": 0 }]]
+    },
+    "Skip Image": {
+      "main": [[{ "node": "Create Offer", "type": "main", "index": 0 }]]
+    },
+    "Create Offer": {
+      "main": [[{ "node": "Get Product", "type": "main", "index": 0 }]]
+    },
+    "Get Product": {
+      "main": [[{ "node": "Build Result", "type": "main", "index": 0 }]]
+    },
+    "Build Result": {
+      "main": [[{ "node": "Result Ok?", "type": "main", "index": 0 }]]
+    },
+    "Result Ok?": {
+      "main": [
+        [{ "node": "Respond Success", "type": "main", "index": 0 }],
+        [{ "node": "Respond Error", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Tehran"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": [{ "name": "shop" }, { "name": "owner" }, { "name": "telegram" }]
+}

@@ -1,0 +1,252 @@
+{
+  "id": "seo-content-refresh-weekly",
+  "name": "SEO Content Refresh Weekly",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 12 * * 4"
+            }
+          ]
+        }
+      },
+      "id": "cron",
+      "name": "Thursday 12:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "api",
+              "name": "apiBase",
+              "value": "={{ $env.API_BASE_URL || 'http://backend:8080/api' }}",
+              "type": "string"
+            },
+            {
+              "id": "hook",
+              "name": "alertWebhook",
+              "value": "={{ $env.SEO_ALERT_WEBHOOK_URL || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "admin",
+              "name": "adminBase",
+              "value": "={{ $env.CONTENT_ADMIN_BASE_URL || 'http://localhost:3000' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "config",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.apiBase }}/Identity/login",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"emailOrPhone\": \"{{ $env.CONTENT_BOT_EMAIL }}\",\n  \"password\": \"{{ $env.CONTENT_BOT_PASSWORD }}\"\n}",
+        "options": {}
+      },
+      "id": "login",
+      "name": "Login Content Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config').item.json.apiBase }}/SeoOps/refresh-candidates",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "staleDays",
+              "value": "={{ $env.SEO_STALE_DAYS || '90' }}"
+            },
+            {
+              "name": "take",
+              "value": "5"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.data.accessToken || $json.accessToken || $json.data?.accessToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "candidates",
+      "name": "Refresh Candidates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $input.first().json;\nlet items = payload.data || payload || [];\nif (!Array.isArray(items)) items = [];\nif (!items.length) {\n  return [{ json: { skip: true, text: 'Content refresh: no stale blogs.', alertWebhook: $('Config').item.json.alertWebhook } }];\n}\nreturn [{ json: { skip: false, items: items.slice(0, 5), alertWebhook: $('Config').item.json.alertWebhook, adminBase: $('Config').item.json.adminBase } }];"
+      },
+      "id": "gate",
+      "name": "Has Candidates?",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !$json.skip }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-go",
+      "name": "Continue?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LLM_API_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.LLM_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "HTTP-Referer",
+              "value": "https://lucaloupe.com"
+            },
+            {
+              "name": "X-Title",
+              "value": "Luca Loupe SEO Blog"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $env.LLM_MODEL || 'openrouter/free' }}\",\n  \"temperature\": 0.4,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"برای هر مقاله قدیمی یک brief رفرش بنویس. خروجی JSON: {\\\"briefs\\\":[{\\\"blogId\\\":number,\\\"slug\\\":string,\\\"priority\\\":\\\"high|medium|low\\\",\\\"updateGoals\\\":[string],\\\"newH2Ideas\\\":[string],\\\"faqToAdd\\\":[string],\\\"internalLinkTargets\\\":[string]}]}. انتشار خودکار ممنوع؛ فقط برنامه کاری.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify(JSON.stringify($json.items)) }}\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "llm",
+      "name": "Build Refresh Briefs (LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst content = raw.choices?.[0]?.message?.content || '{}';\nlet parsed = {};\ntry { parsed = JSON.parse(content); } catch { parsed = { briefs: [] }; }\nconst briefs = Array.isArray(parsed.briefs) ? parsed.briefs : [];\nconst adminBase = $('Has Candidates?').item.json.adminBase;\nconst lines = briefs.map((b) => {\n  return [\n    `• ${b.slug || b.blogId} [${b.priority || 'medium'}]`,\n    `  admin: ${adminBase}/fa/admin`,\n    `  goals: ${(b.updateGoals || []).join(' | ')}`,\n    `  H2: ${(b.newH2Ideas || []).slice(0, 3).join(' | ')}`,\n    `  FAQ: ${(b.faqToAdd || []).slice(0, 2).join(' | ')}`\n  ].join('\\n');\n});\nconst text = [\n  '♻️ Content Refresh Queue (HUMAN GATE)',\n  'Do NOT auto-publish. Edit in admin, then activate.',\n  '',\n  ...(lines.length ? lines : ['No briefs parsed'])\n].join('\\n');\nreturn [{ json: { text, alertWebhook: $('Has Candidates?').item.json.alertWebhook, briefs } }];"
+      },
+      "id": "format",
+      "name": "Format Refresh Queue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !!$json.alertWebhook }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-hook",
+      "name": "Has Webhook?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1760, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.alertWebhook }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.text) }}\n}",
+        "options": {}
+      },
+      "id": "send",
+      "name": "Send Queue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 100],
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "Thursday 12:00": {
+      "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
+    },
+    "Config": {
+      "main": [[{ "node": "Login Content Bot", "type": "main", "index": 0 }]]
+    },
+    "Login Content Bot": {
+      "main": [[{ "node": "Refresh Candidates", "type": "main", "index": 0 }]]
+    },
+    "Refresh Candidates": {
+      "main": [[{ "node": "Has Candidates?", "type": "main", "index": 0 }]]
+    },
+    "Has Candidates?": {
+      "main": [[{ "node": "Continue?", "type": "main", "index": 0 }]]
+    },
+    "Continue?": {
+      "main": [
+        [{ "node": "Build Refresh Briefs (LLM)", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Build Refresh Briefs (LLM)": {
+      "main": [[{ "node": "Format Refresh Queue", "type": "main", "index": 0 }]]
+    },
+    "Format Refresh Queue": {
+      "main": [[{ "node": "Has Webhook?", "type": "main", "index": 0 }]]
+    },
+    "Has Webhook?": {
+      "main": [
+        [{ "node": "Send Queue", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Tehran"
+  },
+  "versionId": "1",
+  "tags": [{ "name": "seo" }, { "name": "refresh" }]
+}

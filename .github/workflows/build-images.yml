@@ -1,0 +1,150 @@
+# Optional backup: build from OnlineShop-Compose monorepo, then deploy via candyRose.
+#
+# Primary CI lives in OnlineShop-Compose (.github/workflows/main.yml).
+# Use this only for manual rebuilds from candyRose Actions.
+#
+# Variable:
+#   APP_REPO = hamidrezafallahi/OnlineShop-Compose
+#
+# Secrets:
+#   DOCKER_USERNAME, DOCKERHUB_TOKEN
+#   APP_REPO_TOKEN  (read OnlineShop-Compose + dispatch on candyRose)
+
+name: Build images and request deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_frontend:
+        description: "Build & push shop-frontend"
+        type: boolean
+        default: true
+      build_backend:
+        description: "Build & push shop-backend"
+        type: boolean
+        default: true
+      deploy_after_push:
+        description: "After push, trigger Deploy to VPS"
+        type: boolean
+        default: true
+      app_ref:
+        description: "Git ref in OnlineShop-Compose"
+        type: string
+        default: master
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check APP_REPO
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="${{ vars.APP_REPO }}"
+          if [[ -z "$REPO" ]]; then
+            REPO="hamidrezafallahi/OnlineShop-Compose"
+            echo "APP_REPO not set; defaulting to $REPO"
+          fi
+          echo "APP_REPO=$REPO" >> "$GITHUB_ENV"
+          if [[ "${{ inputs.build_frontend }}" != "true" && "${{ inputs.build_backend }}" != "true" ]]; then
+            echo "ERROR: enable frontend and/or backend build"
+            exit 1
+          fi
+
+  build:
+    name: Build from OnlineShop-Compose
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.sha }}
+      built_frontend: ${{ steps.flags.outputs.frontend }}
+      built_backend: ${{ steps.flags.outputs.backend }}
+    steps:
+      - name: Checkout app monorepo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.APP_REPO || 'hamidrezafallahi/OnlineShop-Compose' }}
+          ref: ${{ inputs.app_ref }}
+          token: ${{ secrets.APP_REPO_TOKEN }}
+
+      - name: Meta
+        id: meta
+        run: echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Flags
+        id: flags
+        run: |
+          echo "frontend=${{ inputs.build_frontend }}" >> "$GITHUB_OUTPUT"
+          echo "backend=${{ inputs.build_backend }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build frontend
+        if: inputs.build_frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./FrontEnd
+          file: ./FrontEnd/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/shop-frontend:${{ steps.meta.outputs.sha }}
+          build-args: |
+            NEXT_PUBLIC_SITE_URL=https://lucaloupe.com
+            NEXT_PUBLIC_SITE_NAME=Luca Loupe
+            INTERNAL_SERVER_SIDE_API_URL=http://backend:8080
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+
+      - name: Build backend
+        if: inputs.build_backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./BackEnd
+          file: ./BackEnd/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/shop-backend:${{ steps.meta.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+
+  request-deploy:
+    name: Request VPS deploy
+    needs: build
+    if: ${{ always() && !cancelled() && inputs.deploy_after_push && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide service
+        id: decide
+        shell: bash
+        run: |
+          set -euo pipefail
+          FE="${{ needs.build.outputs.built_frontend }}"
+          BE="${{ needs.build.outputs.built_backend }}"
+          if [[ "$FE" == "true" && "$BE" == "true" ]]; then
+            echo "service=all" >> "$GITHUB_OUTPUT"
+          elif [[ "$FE" == "true" ]]; then
+            echo "service=frontend" >> "$GITHUB_OUTPUT"
+          else
+            echo "service=backend" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger Deploy to VPS
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.APP_REPO_TOKEN }}
+          event-type: deploy
+          client-payload: |
+            {
+              "service": "${{ steps.decide.outputs.service }}",
+              "image_tag": "${{ needs.build.outputs.image_tag }}"
+            }

@@ -1,0 +1,213 @@
+{
+  "id": "shop-offer-update",
+  "name": "Shop Offer Update (Telegram owner)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "shop-offer-update",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "shop-offer-update"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst secret = $env.SHOP_OWNER_WEBHOOK_SECRET;\nconst headers = item.json.headers || {};\nconst body = (item.json.body && typeof item.json.body === 'object') ? item.json.body : item.json;\nconst headerSecret = String(headers['x-shop-webhook-secret'] || headers['X-Shop-Webhook-Secret'] || '');\nconst bodySecret = String(body.webhookSecret || item.json.webhookSecret || '');\nconst authorized = !!secret && (headerSecret === secret || bodySecret === secret);\nconst hasCatalogApiKey = String($env.CATALOG_API_KEY || '').trim().length > 0;\n\nconst offerId = body.offerId ? Number(body.offerId) : null;\nconst productId = body.productId ? Number(body.productId) : null;\nconst name = String(body.name || '').trim();\nconst hasPrice = body.price !== undefined && body.price !== null && String(body.price) !== '';\nconst hasInventory = body.inventory !== undefined && body.inventory !== null && String(body.inventory) !== '';\nconst price = hasPrice ? Number(body.price) : null;\nconst inventory = hasInventory ? Number(body.inventory) : null;\n\nlet error = '';\nlet httpStatus = 200;\nif (!authorized) { error = 'Unauthorized webhook'; httpStatus = 401; }\nelse if (!hasCatalogApiKey) { error = 'CATALOG_API_KEY is not set'; httpStatus = 502; }\nelse if (!offerId && !productId && !name) { error = 'offerId, productId or name is required'; httpStatus = 400; }\nelse if (!hasPrice && !hasInventory) { error = 'price and/or inventory is required'; httpStatus = 400; }\nelse if (hasPrice && (!Number.isFinite(price) || price < 0)) { error = 'price must be >= 0'; httpStatus = 400; }\nelse if (hasInventory && (!Number.isInteger(inventory) || inventory < 0)) { error = 'inventory must be a whole number >= 0'; httpStatus = 400; }\n\nreturn [{ json: {\n  ok: !error, error, httpStatus, offerId, productId, name, price, inventory, hasPrice, hasInventory,\n  apiBase: $env.API_BASE_URL || 'http://backend:8080/api',\n  siteBase: $env.CONTENT_ADMIN_BASE_URL || 'https://lucaloupe.com'\n} }];"
+      },
+      "id": "parse",
+      "name": "Parse Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.ok }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "ready",
+      "name": "Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error || 'Bad request' }) }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus || 400 }}"
+        }
+      },
+      "id": "respond-error",
+      "name": "Respond Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [880, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $input.first().json;\nconst headers = { 'X-Api-Key': String($env.CATALOG_API_KEY || '') };\nconst api = ctx.apiBase;\n\nconst unwrap = (res) => {\n  if (Array.isArray(res)) return res;\n  if (Array.isArray(res?.data)) return res.data;\n  if (Array.isArray(res?.data?.records)) return res.data.records;\n  return res?.data ?? res;\n};\n\nconst http = async (method, url, body) => {\n  const opts = { method, url, headers, json: true, ignoreHttpStatusErrors: true, returnFullResponse: true };\n  if (body !== undefined) {\n    opts.body = body;\n    opts.headers = { ...headers, 'Content-Type': 'application/json' };\n  }\n  const res = await this.helpers.httpRequest(opts);\n  const status = res.statusCode || res.status || 200;\n  const payload = res.body !== undefined ? res.body : res;\n  if (status >= 400) {\n    const err = payload?.error || payload?.title || payload?.message || `HTTP ${status}`;\n    const e = new Error(String(err));\n    e.statusCode = status;\n    throw e;\n  }\n  return payload;\n};\n\ntry {\n  let productId = ctx.productId;\n  let offerId = ctx.offerId;\n  let productName = ctx.name;\n\n  if (!productId && !offerId && ctx.name) {\n    const search = await http('GET', `${api}/Products/search?keyword=${encodeURIComponent(ctx.name)}`);\n    const products = unwrap(search) || [];\n    const list = Array.isArray(products) ? products : [];\n    if (list.length === 0) {\n      return [{ json: { ok: false, httpStatus: 404, error: `No product matched: ${ctx.name}` } }];\n    }\n    if (list.length > 1) {\n      const candidates = list.slice(0, 8).map(p => ({ id: p.id, name: p.name }));\n      return [{ json: { ok: false, httpStatus: 409, error: 'Multiple products matched; pass productId', candidates } }];\n    }\n    productId = list[0].id;\n    productName = list[0].name;\n  }\n\n  if (!offerId) {\n    if (!productId) {\n      return [{ json: { ok: false, httpStatus: 400, error: 'Could not resolve product' } }];\n    }\n    const offerRes = await http('GET', `${api}/ProductOffers/by-product/${productId}`);\n    const offers = unwrap(offerRes) || [];\n    const list = Array.isArray(offers) ? offers : [];\n    if (list.length === 0) {\n      return [{ json: { ok: false, httpStatus: 404, error: `No offer for productId ${productId}` } }];\n    }\n    if (list.length > 1) {\n      const candidates = list.map(o => ({ id: o.id, productId: o.productId, productName: o.productName, price: o.basePrice, inventory: o.inventory }));\n      return [{ json: { ok: false, httpStatus: 409, error: 'Multiple offers; pass offerId', candidates } }];\n    }\n    offerId = list[0].id;\n    productName = productName || list[0].productName;\n    productId = productId || list[0].productId;\n  }\n\n  const payload = { id: offerId };\n  if (ctx.hasPrice) payload.basePrice = ctx.price;\n  if (ctx.hasInventory) payload.inventory = ctx.inventory;\n\n  const updated = await http('PUT', `${api}/ProductOffers`, payload);\n  if (updated?.isSuccess === false) {\n    return [{ json: { ok: false, httpStatus: updated.error === 'Unauthorized' ? 401 : 400, error: updated.error || 'Update offer failed' } }];\n  }\n\n  const url = `${String(ctx.siteBase).replace(/\\/$/, '')}/fa/products/${productId}`;\n  const inventory = ctx.hasInventory ? ctx.inventory : undefined;\n  const lowStock = ctx.hasInventory && Number.isFinite(inventory) && inventory < 2;\n  return [{ json: {\n    ok: true, httpStatus: 200, offerId, productId, name: productName,\n    price: ctx.hasPrice ? ctx.price : undefined,\n    inventory,\n    lowStock,\n    telegramChatId: String($env.TELEGRAM_CHAT_ID || '').trim(),\n    url\n  } }];\n} catch (e) {\n  const msg = e.message || String(e);\n  const status = e.statusCode || 502;\n  return [{ json: { ok: false, httpStatus: status >= 400 ? status : 502, error: msg } }];\n}"
+      },
+      "id": "execute",
+      "name": "Update Offer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.ok }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "result-ok",
+      "name": "Result Ok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [880, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !!$json.lowStock && !!$json.telegramChatId && !!$env.TELEGRAM_BOT_TOKEN }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "low-stock?",
+      "name": "Low Stock?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1100, 120]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.telegramChatId, text: ['⚠️ هشدار موجودی کم (< 2)', `#${$json.offerId} ${$json.name || ''}`, `موجودی: ${$json.inventory}`, `productId: ${$json.productId || '-'}`].join('\\n'), disable_web_page_preview: true }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "low-stock-tg",
+      "name": "Low Stock Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 40]
+    },
+    {
+      "parameters": {
+        "jsCode": "const upd = $('Update Offer').item.json;\nreturn [{ json: {\n  ok: true, httpStatus: 200, offerId: upd.offerId, productId: upd.productId, name: upd.name,\n  price: upd.price, inventory: upd.inventory, url: upd.url, lowStockAlerted: true\n} }];"
+      },
+      "id": "after-low-stock",
+      "name": "After Low Stock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 40]
+    },
+    {
+      "parameters": {
+        "jsCode": "const upd = $input.first().json;\nreturn [{ json: {\n  ok: true, httpStatus: 200, offerId: upd.offerId, productId: upd.productId, name: upd.name,\n  price: upd.price, inventory: upd.inventory, url: upd.url, lowStockAlerted: false\n} }];"
+      },
+      "id": "skip-low-stock",
+      "name": "Skip Low Stock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1760, 120]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Parse Payload", "type": "main", "index": 0 }]]
+    },
+    "Parse Payload": {
+      "main": [[{ "node": "Ready?", "type": "main", "index": 0 }]]
+    },
+    "Ready?": {
+      "main": [
+        [{ "node": "Update Offer", "type": "main", "index": 0 }],
+        [{ "node": "Respond Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update Offer": {
+      "main": [[{ "node": "Result Ok?", "type": "main", "index": 0 }]]
+    },
+    "Result Ok?": {
+      "main": [
+        [{ "node": "Low Stock?", "type": "main", "index": 0 }],
+        [{ "node": "Respond Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Low Stock?": {
+      "main": [
+        [{ "node": "Low Stock Telegram", "type": "main", "index": 0 }],
+        [{ "node": "Skip Low Stock", "type": "main", "index": 0 }]
+      ]
+    },
+    "Low Stock Telegram": {
+      "main": [[{ "node": "After Low Stock", "type": "main", "index": 0 }]]
+    },
+    "After Low Stock": {
+      "main": [[{ "node": "Respond Success", "type": "main", "index": 0 }]]
+    },
+    "Skip Low Stock": {
+      "main": [[{ "node": "Respond Success", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Tehran"
+  },
+  "versionId": "p022-low-stock-hook",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": [
+    { "name": "owner" },
+    { "name": "shop" },
+    { "name": "telegram" }
+  ]
+}
