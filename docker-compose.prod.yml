@@ -42,6 +42,7 @@ services:
       - .env
     volumes:
       - uploads_prod:/app/wwwroot/uploads
+      - backups_prod:/app/backups
     depends_on:
       postgres:
         condition: service_healthy
@@ -218,6 +219,8 @@ volumes:
     name: shop-postgres-data-prod
   uploads_prod:
     name: shop-uploads-prod
+  backups_prod:
+    name: shop-backups-prod
   letsencrypt:
     name: shop-letsencrypt
   certbot-webroot:
