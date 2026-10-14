@@ -1,0 +1,15 @@
+#!/bin/sh
+# Sourced by the nginx entrypoint before envsubst renders the templates.
+# Picks the Let's Encrypt cert when it exists, otherwise the self-signed
+# fallback from ssl_bootstrap, so nginx can start (and serve ACME challenges)
+# before the first certificate is issued.
+
+LE_DIR="/etc/letsencrypt/live/${DOMAIN_NAME}"
+FALLBACK_DIR="/etc/nginx/ssl-fallback"
+
+if [ -s "${LE_DIR}/fullchain.pem" ] && [ -s "${LE_DIR}/privkey.pem" ]; then
+    export SSL_CERT_DIR="${LE_DIR}"
+else
+    export SSL_CERT_DIR="${FALLBACK_DIR}"
+    echo "16-ssl-cert.envsh: no Let's Encrypt cert for ${DOMAIN_NAME}, using self-signed fallback"
+fi
