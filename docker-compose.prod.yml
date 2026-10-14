@@ -118,8 +118,6 @@ services:
         condition: service_healthy
       frontend:
         condition: service_healthy
-      x-ui:
-        condition: service_started
     networks:
       - shop-network-prod
     restart: unless-stopped
