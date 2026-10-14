@@ -130,29 +130,6 @@ services:
           memory: 128M
           cpus: "0.3"
   # ─── Certbot (SSL auto-renewal) ───────────────────────────────────────────
-
-  x-ui:
-    build:
-      context: ./docker/x-ui
-    image: shop-x-ui:local
-    container_name: shop-x-ui
-    volumes:
-      - /usr/local/x-ui:/usr/local/x-ui
-      - /etc/x-ui:/etc/x-ui
-    working_dir: /usr/local/x-ui
-    networks:
-      - shop-network-prod
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:54321:54321"
-      - "15839:15839"
-      - "19549:19549"
-    deploy:
-      resources:
-        limits:
-          memory: 192M
-          cpus: "0.5"
-
   certbot_init:
     container_name: shop-certbot-init
     image: certbot/certbot:latest
