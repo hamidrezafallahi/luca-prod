@@ -1,4 +1,4 @@
-# candyRose — never commit real secrets
+# never commit real secrets
 .env
 .env.*
 !.env.example

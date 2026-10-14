@@ -5,9 +5,9 @@
 # Workflows: ./automation/n8n/*.workflow.json (import in n8n UI).
 # Hermes home (SOUL.md, USER.md, config, sessions) stays on the host at
 # /root/.hermes and is mounted read/write at /opt/data inside the container.
-# Secrets live in /opt/shop/.env via env_file (never inline in this file).
+# Secrets live in /opt/luca-prod/.env via env_file (never inline in this file).
 #
-# Run (on VPS, from /opt/shop):
+# Run (on VPS, from /opt/luca-prod):
 #   docker compose -p shop -f docker-compose.automation.yml up -d
 # Or via deploy:
 #   ./deploy.sh automation

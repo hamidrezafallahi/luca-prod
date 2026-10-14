@@ -1,10 +1,11 @@
-# Deploy candyRose infra / images to the VPS.
+# Deploy luca-prod infra / images to the VPS (repo checked out at /opt/luca-prod).
 #
-# This repository does NOT contain FrontEnd/BackEnd source.
-# App images are built elsewhere, pushed to Docker Hub as:
-#   <DOCKER_USERNAME>/shop-frontend:<git-sha>
-#   <DOCKER_USERNAME>/shop-backend:<git-sha>
-# Then this workflow deploys that tag via ./deploy.sh <service> <sha>
+# This repository does NOT contain FrontEnd/BackEnd source (that is luca-dev).
+# luca-dev builds and pushes app images to Docker Hub as:
+#   <DOCKER_USERNAME>/luca-frontend:<git-sha>
+#   <DOCKER_USERNAME>/luca-backend:<git-sha>
+# and deploys them itself via SSH + ./deploy.sh <service> <sha>.
+# This workflow handles infra changes and manual deploys/rollbacks of a given tag.
 #
 # Triggers:
 #   1) push to master (infra paths) → git pull + recreate nginx
@@ -16,7 +17,7 @@
 #
 # Optional (app repo calling this one):
 #   In the app repo, after docker push of :${{ github.sha }}, fire:
-#     repository: hamidrezafallahi/candyRose
+#     repository: hamidrezafallahi/luca-prod
 #     event-type: deploy
 #     client-payload: { "service": "frontend"|"backend"|"all", "image_tag": "<sha>" }
 
@@ -119,7 +120,7 @@ jobs:
           envs: DEPLOY_TARGET,IMAGE_TAG
           script: |
             set -euo pipefail
-            cd /opt/shop
+            cd /opt/luca-prod
 
             echo "Syncing infra repo..."
             git fetch --all --prune

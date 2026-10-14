@@ -12,13 +12,16 @@
 #   ./deploy.sh rollback backend
 #   ./deploy.sh rollback all
 #
-# CI: see DEPLOY.md and .github/workflows/deploy.yml (always pass <sha> for app deploys).
+# CI: luca-dev .github/workflows/main.yml (app deploys) and
+#     .github/workflows/deploy.yml in this repo (infra / manual deploys).
+#     Always pass <sha> for app deploys.
 # =============================================================================
 
 set -euo pipefail
 
+APP_DIR="/opt/luca-prod"
 LOG_FILE="/var/log/shop-deploy.log"
-STATE_DIR="/opt/shop/.deploy-state"
+STATE_DIR="$APP_DIR/.deploy-state"
 COMPOSE="docker compose -p shop -f docker-compose.prod.yml"
 COMPOSE_AUTOMATION="docker compose -p shop -f docker-compose.automation.yml"
 
@@ -26,7 +29,7 @@ COMPOSE_AUTOMATION="docker compose -p shop -f docker-compose.automation.yml"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 mkdir -p "$STATE_DIR"
-cd /opt/shop
+cd "$APP_DIR"
 
 echo "=================================================="
 echo "Deploy started at: $(date)"

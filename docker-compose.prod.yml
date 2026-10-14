@@ -34,7 +34,7 @@ services:
           memory: 512M
   # ─── Backend (ASP.NET) ──────────────────────────────────────────────────────
   backend:
-    image: ${DOCKER_USERNAME:-hamidrezafalahi}/shop-backend:${BACKEND_IMAGE_TAG}
+    image: ${DOCKER_USERNAME:-hamidrezafalahi}/luca-backend:${BACKEND_IMAGE_TAG}
     container_name: shop-backend-prod
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8080}:8080"
@@ -66,7 +66,7 @@ services:
           cpus: "0.5"
   # ─── Frontend (Next.js) ─────────────────────────────────────────────────────
   frontend:
-    image: ${DOCKER_USERNAME:-hamidrezafalahi}/shop-frontend:${FRONTEND_IMAGE_TAG}
+    image: ${DOCKER_USERNAME:-hamidrezafalahi}/luca-frontend:${FRONTEND_IMAGE_TAG}
     container_name: shop-frontend-prod
     env_file:
       - .env

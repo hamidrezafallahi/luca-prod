@@ -1,4 +1,4 @@
-# SEO Automation Pack (candyRose / production)
+# SEO Automation Pack (luca-prod / production)
 
 This repo hosts **infra + n8n workflows**. App code (`SeoOps`, blog quality gates) lives in [OnlineShop-Compose](https://github.com/hamidrezafallahi/OnlineShop-Compose) and reaches production only after a **new backend image** is deployed.
 
@@ -35,7 +35,7 @@ If backend SHA is older than that code, import workflows but expect `404` on `/a
 ## VPS setup
 
 ```bash
-cd /opt/shop
+cd /opt/luca-prod
 # 1) ensure .env has SEO/n8n keys (see ../.env.example)
 # 2) deploy backend that includes SeoOps
 ./deploy.sh backend <onlineShop-Compose-sha>
@@ -109,7 +109,7 @@ Do **not** use `meta-llama/llama-3.3-70b-instruct:free` — OpenRouter 404s that
 | Login failed | Sync `CONTENT_BOT_*` with `ContentAutomation__*` |
 | Health fails on public URLs | Set `SeoOps__SitePublicUrl=https://lucaloupe.com` and recreate backend |
 | No Slack/Discord message | Set `SEO_ALERT_WEBHOOK_URL` or read n8n Executions |
-| Owner product webhook 401 | Set `SHOP_OWNER_WEBHOOK_SECRET` in `/opt/shop/.env` and Hermes `.env`, then `./deploy.sh automation recreate` |
+| Owner product webhook 401 | Set `SHOP_OWNER_WEBHOOK_SECRET` in `/opt/luca-prod/.env` and Hermes `.env`, then `./deploy.sh automation recreate` |
 | Owner product webhook 404 | Import + activate `shop-product-create.workflow.json`; URL is `/webhook/shop-product-create` not `/webhook-test/` |
 | Offer update 403 Unauthorized | Deploy backend that allows ContentEditor to update any ProductOffer (staff bypass). Current catalog offers belong to SuperAdmin, not the content bot. |
-| Daily digest did not arrive | Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `/opt/shop/.env`, then `./deploy.sh automation recreate`. Smoke: `POST /webhook/shop-orders-digest` with the owner webhook secret. |
+| Daily digest did not arrive | Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `/opt/luca-prod/.env`, then `./deploy.sh automation recreate`. Smoke: `POST /webhook/shop-orders-digest` with the owner webhook secret. |

@@ -22,7 +22,7 @@ duplicate the external network wiring for little gain.
 | --- | --- |
 | Web dashboard | `http://SERVER_IP:9119` (basic auth from `.env`) |
 | OpenAI-compatible API | `http://SERVER_IP:8642/v1` (Bearer `API_SERVER_KEY`) |
-| Telegram | existing bot token in `/opt/shop/.env` |
+| Telegram | existing bot token in `/opt/luca-prod/.env` |
 
 Credentials after first bootstrap: `/root/hermes-access.txt` (mode 600).
 
@@ -31,7 +31,7 @@ Credentials after first bootstrap: `/root/hermes-access.txt` (mode 600).
 | Host path | Container | Purpose |
 | --- | --- | --- |
 | `/root/.hermes` | `/opt/data` | SOUL.md, USER.md, config, sessions, memory |
-| `/opt/shop/.env` | env | secrets + Docker DNS URLs |
+| `/opt/luca-prod/.env` | env | secrets + Docker DNS URLs |
 | `./automation/hermes/skills/shop` | `/opt/data/skills/shop` (ro) | only shop-owner skill (P013) |
 
 Inside the container, n8n is `http://n8n:5678` and the shop API is
@@ -44,7 +44,7 @@ Inside the container, n8n is `http://n8n:5678` and the shop API is
 ./deploy.sh automation recreate
 ```
 
-Hermes `.env` keys (all in `/opt/shop/.env`):
+Hermes `.env` keys (all in `/opt/luca-prod/.env`):
 
 ```bash
 SHOP_OWNER_WEBHOOK_URL=http://n8n:5678/webhook/shop-product-create
