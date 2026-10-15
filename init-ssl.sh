@@ -4,9 +4,10 @@
 #
 # Usage: ./init-ssl.sh
 #
-# Requires DNS A records for both names pointing at SERVER_IP. nginx keeps
-# running (webroot challenge), and nginx_reloader restarts it onto the new
-# cert. Renewal is then handled by certbot_renew.
+# Requires DNS A records for both names pointing at SERVER_IP and the stack
+# already up (deploy.sh / compose up). This script does not start or recreate
+# services: nginx must already be running to serve the webroot challenge.
+# nginx_reloader restarts it onto the new cert; certbot_renew handles renewal.
 # =============================================================================
 
 set -euo pipefail
@@ -31,8 +32,19 @@ if [[ "$dns_ok" != 1 ]]; then
   exit 1
 fi
 
-echo "Making sure nginx is up (serves /.well-known/acme-challenge/)..."
-$COMPOSE up -d nginx certbot_renew nginx_reloader
+# Only check; "up -d" would pull/recreate nginx's dependencies (backend, frontend).
+echo "Checking that nginx is running (serves /.well-known/acme-challenge/)..."
+running="$($COMPOSE ps --status running --services)"
+if ! grep -qx nginx <<<"$running"; then
+  echo "ERROR: nginx is not running. Bring the stack up first, e.g.:"
+  echo "  $COMPOSE up -d"
+  exit 1
+fi
+for svc in certbot_renew nginx_reloader; do
+  if ! grep -qx "$svc" <<<"$running"; then
+    echo "WARNING: $svc is not running; start it with: $COMPOSE up -d --no-deps $svc"
+  fi
+done
 
 echo "Requesting certificate..."
 $COMPOSE --profile init-certs run --rm certbot_init
