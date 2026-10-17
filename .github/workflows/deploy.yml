@@ -117,6 +117,8 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.VPS_PORT }}
+          # Image pulls on the VPS can be slow; default (10m) is too short.
+          command_timeout: 30m
           envs: DEPLOY_TARGET,IMAGE_TAG
           script: |
             set -euo pipefail
