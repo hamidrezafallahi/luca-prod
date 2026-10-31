@@ -40,6 +40,9 @@ services:
       - "127.0.0.1:${BACKEND_PORT:-8080}:8080"
     env_file:
       - .env
+    environment:
+      # Swagger is reached only through an SSH tunnel to 127.0.0.1:${BACKEND_PORT}; nginx keeps /swagger closed.
+      Swagger__Enabled: ${Swagger__Enabled:-true}
     volumes:
       - uploads_prod:/app/wwwroot/uploads
       - backups_prod:/app/backups
